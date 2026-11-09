@@ -125,8 +125,18 @@ async def _fetch_all(kind: str, ids: list[int], log=print) -> list[dict]:
     return out
 
 
+def _clean(r: dict) -> dict:
+    """Repair records cached before the director parser was exact: drop DoPs/composers listed as
+    directors, and keep only real writing credits."""
+    if r.get("kind") == "movie":
+        other = set(r.get("dop") or []) | set(r.get("composer") or [])
+        d = [x for x in r.get("directors") or [] if x not in other]
+        r["directors"] = d or list(r.get("directors") or [])[:1]
+    return r
+
+
 def _frame(rows: list[dict]) -> pd.DataFrame:
-    df = pd.DataFrame(rows).drop_duplicates("id")
+    df = pd.DataFrame([_clean(r) for r in rows]).drop_duplicates("id")
     df["year"] = pd.to_numeric(df["date"].str[:4], errors="coerce").astype("Int64")
     return df.set_index("id", drop=False)
 

@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from . import db, llm, pipeline
+from . import mood as moodlib
 from .tmdb import IMG
 
 STAR = {0.5: "½", 1: "★", 1.5: "★½", 2: "★★", 2.5: "★★½", 3: "★★★", 3.5: "★★★½", 4: "★★★★", 4.5: "★★★★½", 5: "★★★★★"}
@@ -28,7 +29,8 @@ def _blocked(meta: dict, blocks: set[str], key: str) -> bool:
 
 
 def _eligible(kind: str, m: dict, f: dict) -> bool:
-    rt = m.get("runtime") or 0
+    rt = m.get("runtime")
+    rt = 0 if rt is None or pd.isna(rt) else rt
     if kind == "movie":
         if rt and rt < 60:
             return False
@@ -36,7 +38,7 @@ def _eligible(kind: str, m: dict, f: dict) -> bool:
             return False
     if (m.get("vote_count") or 0) < f.get("min_votes", 200 if kind == "movie" else 300):
         return False
-    if f.get("max_runtime") and kind == "movie" and rt and rt > f["max_runtime"]:
+    if f.get("max_runtime") and kind == "movie" and (not rt or rt > f["max_runtime"]):
         return False
     y = m.get("year")
     y = None if y is None or pd.isna(y) else int(y)
@@ -187,12 +189,16 @@ Candidates:
 Answer with only a JSON array of objects: [{{"id": <tmdb id>, "why": "<one or two sentences>"}}]"""
     out = llm.parse_json(llm.complete(prompt, timeout=150))
     by_id = {c["tmdb_id"]: c for c in cands}
-    picked = []
-    for o in out:
-        c = by_id.get(int(o.get("id", -1)))
-        if c is not None and c not in picked:
-            c = dict(c, why=str(o.get("why") or c["why"]), why_source="llm")
-            picked.append(c)
+    picked, ids = [], set()
+    for o in out if isinstance(out, list) else []:
+        try:
+            i = int(o.get("id", -1))
+        except (TypeError, ValueError):
+            continue
+        c = by_id.get(i)
+        if c is not None and i not in ids:
+            picked.append(dict(c, why=str(o.get("why") or c["why"]), why_source="llm"))
+            ids.add(i)
         if len(picked) >= n:
             break
     return picked
@@ -212,11 +218,18 @@ def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filte
     fb = db.feedback()
     dismissed = {f"{r.kind}:{r.tmdb_id}" for r in fb[fb["action"].eq("not_interested")].itertuples()}
     seen, wl = state["seen"], state["watchlist"]
+    parsed = moodlib.parse(mood) if mood else {"filters": {}, "want": [], "avoid": []}
+    if kind == "tv":
+        parsed["filters"].pop("max_runtime", None)  # episode length isn't what "under two hours" means
+    filters = {**parsed["filters"], **filters}  # explicit filter controls win over the mood text
+    allow_standup = "stand" in (mood or "").lower()
 
     keys = []
     for k in table.index:
         m = meta.get(k)
         if m is None or k in seen or k in dismissed or _blocked(m, blocks, k):
+            continue
+        if not allow_standup and any("stand-up" in x or "stand up" in x for x in (m.get("keywords") or [])):
             continue
         if kind == "movie" and mode == "watchlist" and k not in wl:
             continue
@@ -235,26 +248,42 @@ def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filte
     score = T["pred"].to_numpy() - 0.6 * float(dial) ** 1.5 * popz * (mode != "watchlist")
     # Rank by a cautious estimate: thinly-supported predictions need to clear a higher bar.
     score = score - T["confidence"].map({"low": 0.3, "medium": 0.1, "high": 0.0}).to_numpy()
-    mood_sim = None
-    if mood and ctx.cs is not None:
-        mv = ctx.cs.embed_text(mood)
-        rows = [ctx.cs.index.get(k) for k in keys]
-        mood_sim = np.array([float(ctx.cs.Z[r] @ mv) if r is not None else 0.0 for r in rows])
-        score = score + 1.2 * (mood_sim - mood_sim.mean()) / (mood_sim.std() + 1e-9) * 0.35
-    order = [keys[i] for i in np.argsort(-score)]
+    # Titles without MovieLens data lean on the TMDB average, which is fan-inflated at low vote
+    # counts. Their ranking pays for that uncertainty; predictions themselves are unchanged.
+    votes = np.array([meta[k].get("vote_count") or 0 for k in keys], float)
+    content_only = (T["route"].to_numpy() == "content")
+    score = score - content_only * 0.6 * np.sqrt(500 / (votes + 500))
+    fit = np.zeros(len(keys))
+    if mood:
+        # Mood fit: lexicon (genres/keywords, with negations) plus plot-text similarity.
+        lex = np.array([moodlib.score(meta[k], parsed) for k in keys])
+        fit = 1.5 * lex
+        if ctx.cs is not None:
+            mv = ctx.cs.embed_text(mood)
+            rows = [ctx.cs.index.get(k) for k in keys]
+            sim = np.array([float(ctx.cs.Z[r] @ mv) if r is not None else 0.0 for r in rows])
+            fit = fit + 0.25 * (sim - sim.mean()) / (sim.std() + 1e-9)
+    order = [keys[i] for i in np.argsort(-(score + fit))]
+    # Claude's shortlist leans harder on the mood: it can judge fit, but only among what it's given.
+    llm_order = [keys[i] for i in np.argsort(-(score + 2.0 * fit))] if mood else order
     rated = state["rated"] if kind == "movie" else state.get("tv_rated", state["rated"])
     want = offset + n
 
     llm_used, llm_error = False, None
-    pool = _diverse(order, meta, ctx.cs.Z if ctx.cs is not None else None,
-                    ctx.cs.index if ctx.cs is not None else {}, max(want, 50) if use_llm else want)
+    Z = ctx.cs.Z if ctx.cs is not None else None
+    idx = ctx.cs.index if ctx.cs is not None else {}
+    pool = _diverse(order, meta, Z, idx, want)
     if use_llm and offset == 0:
-        cands = [_card(k, meta[k], T.loc[k], ctx, rated) for k in pool[:50]]
+        cands = [_card(k, meta[k], T.loc[k], ctx, rated) for k in _diverse(llm_order, meta, Z, idx, 50)]
         try:
             items = _llm_rerank(kind, mood, cands, rated, n)
             llm_used = len(items) > 0
             if len(items) < n:
-                items += [c for c in cands if c not in items][: n - len(items)]
+                got = {c["tmdb_id"] for c in items}
+                items += [c for c in cands if c["tmdb_id"] not in got][: n - len(items)]
+        except ValueError:
+            llm_error = "Claude's reply wasn't usable JSON"
+            items = cands[:n]
         except Exception as e:  # noqa: BLE001
             llm_error = str(e)[:200]
             items = cands[:n]

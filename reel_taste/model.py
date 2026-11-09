@@ -272,5 +272,9 @@ class Hybrid:
         F["route"] = np.where(has_cf, "full", "content")
         support = (has_cf * 0.4 + (F["cf_max"].fillna(0) > 0.35) * 0.25 +
                    (F["ct_max"].fillna(0) > 0.45) * 0.25 + (F["link_n"].fillna(0) > 0) * 0.2)
-        F["confidence"] = np.select([support >= 0.75, support >= 0.45], ["high", "medium"], "low")
+        conf = np.select([support >= 0.75, support >= 0.45], ["high", "medium"], "low")
+        # Without crowd data, few TMDB votes caps confidence.
+        votes = np.expm1(F["tmdb_logn"].fillna(0).to_numpy()) if "tmdb_logn" in F else np.zeros(len(F))
+        conf = np.where(~has_cf & (votes < 500), "low", np.where(~has_cf & (votes < 1500) & (conf == "high"), "medium", conf))
+        F["confidence"] = conf
         return F

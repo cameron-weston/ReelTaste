@@ -59,8 +59,8 @@ def _slim(raw: dict, kind: str) -> dict:
     def jobs(*names):
         out = []
         for c in crew:
-            j = c.get("job") or ",".join(x.get("job", "") for x in c.get("jobs", []))
-            if any(n in j for n in names):
+            js = [c["job"]] if c.get("job") else [x.get("job", "") for x in c.get("jobs", [])]
+            if any(j in names for j in js):  # exact: "Director" must not match "Director of Photography"
                 out.append(c["name"])
         return list(dict.fromkeys(out))[:4]
 
