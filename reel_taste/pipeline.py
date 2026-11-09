@@ -30,6 +30,9 @@ def build_context(uf: pd.DataFrame | None = None) -> Context:
         cs = ContentSpace.load() if (ARTIFACTS / "content.pkl").exists() else None
         for kind, df in frames.items():
             for r in df.to_dict("records"):
+                for f, v in r.items():
+                    if isinstance(v, np.ndarray):
+                        r[f] = v.tolist()
                 r["ml_id"] = r.get("ml_id") if kind == "movie" and pd.notna(r.get("ml_id")) else None
                 meta[f"{kind}:{r['id']}"] = r
     return Context(cf=cf, cs=cs, meta=meta)
@@ -42,7 +45,7 @@ def merged_user_films() -> pd.DataFrame:
     if len(rss) == 0:
         return uf
     ml = movielens.movies()
-    t2m = dict(zip(ml["tmdbId"].dropna().astype(int), ml["movieId"]))
+    t2m = movielens.tmdb_to_ml()
     by_tmdb = {(k, int(t)): i for i, (k, t) in enumerate(zip(uf["kind"], uf["tmdb_id"])) if pd.notna(t)}
     by_key = {k: i for i, k in enumerate(uf["key"])}
     uf = uf.copy()
@@ -138,7 +141,7 @@ def score_all(ctx: Context, uf: pd.DataFrame, log=print) -> dict:
     seen_keys = {item_key(r) for r in uf[uf["watched"] | uf["rating"].notna()].to_dict("records")}
     wl_keys = {item_key(r) for r in uf[uf["watchlist"]].to_dict("records")}
     state = dict(built=time.strftime("%Y-%m-%d %H:%M"), seen=seen_keys, watchlist=wl_keys,
-                 film_cv=film_model.cv, film_learners={k: v[0] for k, v in film_model.models.items()})
+                 film_cv=film_model.cv, film_learners=film_model.describe())
 
     if ctx.meta:
         keys = [k for k, m in ctx.meta.items() if k.startswith("movie:")]

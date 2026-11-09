@@ -30,6 +30,9 @@ def _pick(results: list[dict], name: str, year: int | None, kind: str) -> dict |
         d = r.get("release_date") or r.get("first_air_date") or ""
         ry = int(d[:4]) if d[:4].isdigit() else None
         s = max(_sim(name, t), _sim(name, ot))
+        nt, nn = norm_title(t), norm_title(name)
+        if len(nn) >= 5 and (nt.startswith(nn + " ") or nn.startswith(nt + " ")):
+            s = max(s, 0.8)  # "Glass Onion" vs "Glass Onion: A Knives Out Mystery"
         if year and ry:
             s -= 0.15 * min(abs(ry - year), 3)
         s += min((r.get("vote_count") or 0), 2000) / 20000  # tie-break toward the well-known one
@@ -39,16 +42,20 @@ def _pick(results: list[dict], name: str, year: int | None, kind: str) -> dict |
 
 
 async def _match_one(c: tmdb.Client, name: str, year: int | None):
-    res = await c.search("movie", name, year)
-    hit = _pick(res, name, year, "movie")
-    if hit is None and year:
-        hit = _pick(await c.search("movie", name, None), name, year, "movie")
-    if hit is not None:
-        return "movie", hit["id"]
-    res = await c.search("tv", name, year)
-    hit = _pick(res, name, year, "tv") or _pick(await c.search("tv", name, None), name, year, "tv")
-    if hit is not None:
-        return "tv", hit["id"]
+    year = None if year is None or pd.isna(year) else int(year)
+    mv = _pick(await c.search("movie", name, year), name, year, "movie")
+    if mv is None and year:
+        mv = _pick(await c.search("movie", name, None), name, year, "movie")
+    mv_votes = (mv or {}).get("vote_count") or 0
+    tv = None
+    if mv is None or mv_votes < 50:
+        # Letterboxd lists some miniseries; a near-unknown film with the same name is usually wrong.
+        tv = _pick(await c.search("tv", name, year), name, year, "tv") or \
+             _pick(await c.search("tv", name, None), name, year, "tv")
+    if tv is not None and (mv is None or (tv.get("vote_count") or 0) > 10 * max(mv_votes, 1)):
+        return "tv", tv["id"]
+    if mv is not None:
+        return "movie", mv["id"]
     return None, None
 
 
@@ -60,7 +67,15 @@ def match_user(log=print) -> pd.DataFrame:
     films["tmdb_id"] = pd.array([None] * len(films), dtype="Int64")
     if tmdb.has_key():
         prev = pd.read_parquet(USER_FILMS) if USER_FILMS.exists() else None
-        known = {} if prev is None else {r.key: (r.kind, r.tmdb_id) for r in prev.itertuples() if r.kind}
+        known = {} if prev is None or "matched_by" not in prev else {
+            r.key: (r.kind if isinstance(r.kind, str) else None, None if pd.isna(r.tmdb_id) else int(r.tmdb_id))
+            for r in prev.itertuples() if r.matched_by == "tmdb" and isinstance(r.kind, str)}
+        # Re-check film matches that turned out to be near-unknown titles (likely a same-name miniseries).
+        for k, (kind, tid) in list(known.items()):
+            if kind == "movie" and tid is not None:
+                m = tmdb.cached("movie", tid)
+                if m is not None and (m.get("vote_count") or 0) < 50:
+                    known.pop(k)
 
         async def go():
             c = tmdb.Client()
@@ -76,12 +91,14 @@ def match_user(log=print) -> pd.DataFrame:
         films["kind"] = films["key"].map(lambda k: known.get(k, (None, None))[0])
         films["tmdb_id"] = pd.array([known.get(k, (None, None))[1] for k in films["key"]], dtype="Int64")
         # Prefer the MovieLens id implied by the TMDB id (more reliable than title matching).
-        t2m = dict(zip(ml["tmdbId"].dropna().astype(int), ml["movieId"]))
+        t2m = movielens.tmdb_to_ml()
         via = films["tmdb_id"].map(lambda t: t2m.get(int(t)) if pd.notna(t) else None)
         films["ml_id"] = pd.array(
             [v if (v is not None and k == "movie") else (m if k != "tv" else None)
              for v, m, k in zip(via, films["ml_id"], films["kind"])], dtype="Int64")
+        films["matched_by"] = "tmdb"
     else:
+        films["matched_by"] = "title"
         m2t = dict(zip(ml["movieId"], ml["tmdbId"]))
         films["tmdb_id"] = pd.array([m2t.get(int(m)) if pd.notna(m) else None for m in films["ml_id"]], dtype="Int64")
         films["kind"] = films["ml_id"].map(lambda m: "movie" if pd.notna(m) else None)
@@ -144,7 +161,7 @@ def build_film_catalog(log=print) -> pd.DataFrame:
     log(f"film catalog: {len(ids):,} TMDB ids")
     rows = tmdb.run(_fetch_all("movie", sorted(ids), log))
     df = _frame(rows)
-    t2m = dict(zip(movielens.movies()["tmdbId"].dropna().astype(int), movielens.movies()["movieId"]))
+    t2m = movielens.tmdb_to_ml()
     df["ml_id"] = pd.array([t2m.get(int(i)) for i in df["id"]], dtype="Int64")
     df.to_parquet(FILM_CATALOG)
     return df

@@ -38,6 +38,11 @@ def movies() -> pd.DataFrame:
     return m
 
 
+def tmdb_to_ml() -> dict[int, int]:
+    m = movies().dropna(subset=["tmdbId"])
+    return dict(zip(m["tmdbId"].astype(int), m["movieId"].astype(int)))
+
+
 def ratings() -> pd.DataFrame:
     """userId, movieId (int32), rating (float32). Cached as parquet after first load."""
     p = ARTIFACTS / "ml_ratings.parquet"

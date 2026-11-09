@@ -82,8 +82,9 @@ def evidence_weight(df: pd.DataFrame, today: str | None = None) -> pd.Series:
     today = pd.Timestamp(today or pd.Timestamp.today().date())
     d = pd.to_datetime(df["rating_date"], errors="coerce")
     years_ago = ((today - d).dt.days / 365.25).fillna(6.0)
-    w = 0.5 ** (years_ago / 6.0)  # half-life of six years: gentle drift tracking
-    w = w.where(~df["backfill"], 0.5 ** (6.0 / 6.0) * 0.85)
+    hl = 3.0  # half-life in years; picked on a time-based validation slice (3y beat 1.5y, 6y, 12y)
+    w = 0.5 ** (years_ago / hl)
+    w = w.where(~df["backfill"], 0.5 ** (6.0 / hl) * 0.85)  # backfill: one shared, older weight
     w = w * (1 + 0.5 * np.minimum(df["rewatches"], 2))
     return w
 

@@ -10,8 +10,11 @@ from sklearn.model_selection import KFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+# Chosen on a time-based validation slice inside the training years (see README):
+MODE = "centered"   # "residual" won on random folds but lost on the time-based slice
+BLEND = "best"      # "best" = the CV winner of ridge/gbm; "avg" = average both
 CF_FEATS = ["cf_pred", "cf_knn", "cf_max", "cf_n", "ml_mean", "ml_logn"]
-CT_FEATS = ["ct_knn", "ct_max", "ct_n", "ct_ridge", "link", "link_n",
+CT_FEATS = ["crowd", "ct_knn", "ct_max", "ct_n", "ct_ridge", "link", "link_n",
             "tmdb_avg", "tmdb_logn", "tmdb_pop", "year", "runtime", "doc", "english", "animation"]
 ALL_FEATS = CF_FEATS + CT_FEATS
 
@@ -46,6 +49,25 @@ def features(train: pd.DataFrame, targets: pd.DataFrame, ctx: Context) -> pd.Dat
     w = train["w"].to_numpy(float)
     ubar = float(np.average(r, weights=w))
     r_c = r - ubar
+
+    # Crowd prior: TMDB average calibrated onto this user's scale (fitted on the train rows only).
+    def tmdb_avg(keys):
+        out = []
+        for k in keys:
+            m = ctx.meta.get(k) or {}
+            out.append(m.get("vote_average") if (m.get("vote_count") or 0) >= 10 else np.nan)
+        return np.array(out, float)
+
+    a_tr, a_tg = tmdb_avg(train["key"]), tmdb_avg(targets["key"])
+    ok = ~np.isnan(a_tr)
+    if ok.sum() >= 10:
+        coef = np.polyfit(a_tr[ok], r[ok], 1, w=np.sqrt(w[ok]))
+        crowd_tr = np.where(ok, np.polyval(coef, np.nan_to_num(a_tr)), ubar)
+        F["crowd"] = np.where(np.isnan(a_tg), np.nan, np.polyval(coef, np.nan_to_num(a_tg)))
+    else:
+        crowd_tr = np.full(len(r), ubar)
+    if MODE == "residual":
+        r_c = r - crowd_tr  # taste signals learn how far you depart from the crowd
 
     cf = ctx.cf
     if cf is not None:
@@ -186,12 +208,17 @@ class Hybrid:
                 self.cv.setdefault(route, {})[name] = score
                 if best is None or score < best[0]:
                     best = (score, name)
-            name = best[1]
-            X = _prep(F, cols, name)
-            m = _learners()[name]()
-            m.fit(X, y, **({"ridge__sample_weight": w} if name == "ridge" else {"sample_weight": w}))
-            self.models[route] = (name, cols, m, list(X.columns) if name == "ridge" else None)
+            fitted = []
+            for name in ([best[1]] if BLEND == "best" else list(_learners())):
+                X = _prep(F, cols, name)
+                m = _learners()[name]()
+                m.fit(X, y, **({"ridge__sample_weight": w} if name == "ridge" else {"sample_weight": w}))
+                fitted.append((name, cols, m, list(X.columns) if name == "ridge" else None))
+            self.models[route] = fitted
         return self
+
+    def describe(self) -> dict:
+        return {k: "+".join(f[0] for f in v) for k, v in self.models.items()}
 
     def predict(self, targets: pd.DataFrame, F: pd.DataFrame | None = None) -> pd.DataFrame:
         if F is None:
@@ -201,11 +228,13 @@ class Hybrid:
         for route, mask in (("full", has_cf), ("content", ~has_cf)):
             if route not in self.models or not mask.any():
                 continue
-            name, cols, m, xcols = self.models[route]
-            X = _prep(F[mask], cols, name)
-            if name == "ridge":
-                X = X.reindex(columns=xcols, fill_value=0.0)
-            out[mask] = m.predict(X) + F.loc[mask, "ubar"].to_numpy()
+            preds = []
+            for name, cols, m, xcols in self.models[route]:
+                X = _prep(F[mask], cols, name)
+                if name == "ridge":
+                    X = X.reindex(columns=xcols, fill_value=0.0)
+                preds.append(m.predict(X))
+            out[mask] = np.mean(preds, axis=0) + F.loc[mask, "ubar"].to_numpy()
         # Anything unroutable falls back to the user's average.
         out = np.where(np.isnan(out), F["ubar"].to_numpy(), out)
         F = F.copy()

@@ -109,7 +109,7 @@ def evaluate(ctx: Context, uf: pd.DataFrame, log=print) -> dict:
 
     res = dict(ts=time.strftime("%Y-%m-%d %H:%M"), n_train=len(train), n_test=len(test),
                test_from=str(test["rating_date"].min()), table=table, bootstrap=boot,
-               learners=hy.models and {k: v[0] for k, v in hy.models.items()}, cv=hy.cv,
+               learners=hy.describe(), cv=hy.cv,
                seconds=round(time.time() - t0, 1),
                examples=[dict(name=r.name, year=r.year, rating=r.rating, pred=round(p, 2), route=rt)
                          for r, p, rt in zip(test.itertuples(), Fte["pred"], Fte["route"])])
