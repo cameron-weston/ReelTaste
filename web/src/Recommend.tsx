@@ -94,7 +94,7 @@ export default function Recommend({ kind, llmReady, status }: Props) {
             <label>Language <select value={f.languages?.[0] ?? ""} onChange={(e) => setF({ ...f, languages: e.target.value ? [e.target.value] : "" })}>
               <option value="">Any</option><option value="en">English</option><option value="fr">French</option><option value="ja">Japanese</option>
               <option value="ko">Korean</option><option value="es">Spanish</option><option value="it">Italian</option><option value="de">German</option></select></label>
-            <label>Min votes <input type="number" value={f.min_votes ?? (kind === "movie" ? 200 : 100)} onChange={(e) => setF({ ...f, min_votes: +e.target.value })} /></label>
+            <label>Min votes <input type="number" value={f.min_votes ?? (kind === "movie" ? 200 : 300)} onChange={(e) => setF({ ...f, min_votes: +e.target.value })} /></label>
             {kind === "movie" && <label className="check"><input type="checkbox" checked={f.include_docs} onChange={(e) => setF({ ...f, include_docs: e.target.checked })} /> Documentaries</label>}
             {kind === "tv" && <label className="check"><input type="checkbox" checked={!!f.finished_only} onChange={(e) => setF({ ...f, finished_only: e.target.checked })} /> Finished shows only</label>}
             {kind === "tv" && <label>Max seasons <input type="number" value={f.max_seasons ?? ""} onChange={(e) => setF({ ...f, max_seasons: e.target.value ? +e.target.value : "" })} /></label>}

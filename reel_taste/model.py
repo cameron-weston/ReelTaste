@@ -26,6 +26,39 @@ class Context:
         self.cf, self.cs, self.meta = cf, cs, meta or {}
 
 
+# Pseudo-votes pulling small-sample TMDB averages toward the catalog mean. For films the time-based
+# validation called 0 vs 300 a tie (0.621 vs 0.620), so films keep the simpler unshrunk average.
+# Shows have no offline test and suffer from fan-inflated low-vote averages, so they are shrunk.
+TMDB_SHRINK = {"movie": 0, "tv": 300}
+
+
+def _catalog_means(ctx: Context) -> dict:
+    if getattr(ctx, "_means", None) is None:
+        means = {}
+        for kind in ("movie", "tv"):
+            v = [(m.get("vote_average"), m.get("vote_count")) for k, m in ctx.meta.items()
+                 if k.startswith(kind + ":") and (m.get("vote_count") or 0) >= 200]
+            means[kind] = float(np.average([a for a, _ in v], weights=[np.log1p(n) for _, n in v])) if v else 6.5
+        ctx._means = means
+    return ctx._means
+
+
+def crowd_score(ctx: Context, key: str) -> float:
+    """TMDB average, shrunk toward the catalog mean by vote count; shows shifted onto the film scale."""
+    m = ctx.meta.get(key) or {}
+    n = m.get("vote_count") or 0
+    if n < 10 or m.get("vote_average") is None:
+        return np.nan
+    kind = key.split(":")[0]
+    means = _catalog_means(ctx)
+    mu = means.get(kind, 6.5)
+    c = TMDB_SHRINK[kind] if isinstance(TMDB_SHRINK, dict) else TMDB_SHRINK
+    a = (m["vote_average"] * n + mu * c) / (n + c)
+    if kind == "tv":
+        a -= means["tv"] - means["movie"]
+    return a
+
+
 def _knn(S: np.ndarray, r_c: np.ndarray, w: np.ndarray, k: int = 30, shrink: float = 1.0):
     """Similarity-weighted average of centred ratings over the top-k positive neighbours."""
     if S.shape[1] == 0:
@@ -52,11 +85,7 @@ def features(train: pd.DataFrame, targets: pd.DataFrame, ctx: Context) -> pd.Dat
 
     # Crowd prior: TMDB average calibrated onto this user's scale (fitted on the train rows only).
     def tmdb_avg(keys):
-        out = []
-        for k in keys:
-            m = ctx.meta.get(k) or {}
-            out.append(m.get("vote_average") if (m.get("vote_count") or 0) >= 10 else np.nan)
-        return np.array(out, float)
+        return np.array([crowd_score(ctx, k) for k in keys], float)
 
     a_tr, a_tg = tmdb_avg(train["key"]), tmdb_avg(targets["key"])
     ok = ~np.isnan(a_tr)
@@ -134,7 +163,8 @@ def features(train: pd.DataFrame, targets: pd.DataFrame, ctx: Context) -> pd.Dat
             link_n.append(len(vals))
         F["link"], F["link_n"] = link, link_n
         rows = [meta.get(k, {}) for k in targets["key"]]
-        F["tmdb_avg"] = [m.get("vote_average") if m.get("vote_count") else np.nan for m in rows]
+        F["tmdb_avg"] = a_tg
+        F["tmdb_raw"] = [m.get("vote_average") if (m.get("vote_count") or 0) >= 10 else np.nan for m in rows]
         F["tmdb_logn"] = [np.log1p(m.get("vote_count") or 0) for m in rows]
         F["tmdb_pop"] = [np.log1p(m.get("popularity") or 0) for m in rows]
         F["year"] = [m.get("year") if m.get("year") is not None and not pd.isna(m.get("year")) else np.nan for m in rows]

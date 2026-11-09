@@ -34,7 +34,7 @@ def _eligible(kind: str, m: dict, f: dict) -> bool:
             return False
         if not f.get("include_docs", True) and "Documentary" in (m.get("genres") or []):
             return False
-    if (m.get("vote_count") or 0) < f.get("min_votes", 200 if kind == "movie" else 100):
+    if (m.get("vote_count") or 0) < f.get("min_votes", 200 if kind == "movie" else 300):
         return False
     if f.get("max_runtime") and kind == "movie" and rt and rt > f["max_runtime"]:
         return False
@@ -231,7 +231,10 @@ def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filte
     T = table.loc[keys]
     pop = np.log1p(np.array([meta[k].get("vote_count") or 0 for k in keys], float))
     popz = (pop - pop.mean()) / (pop.std() + 1e-9)
-    score = T["pred"].to_numpy() - 0.35 * float(dial) * 2 * popz * (mode != "watchlist")
+    # Obscurity dial: 0 = no popularity penalty, 0.5 ≈ 0.2★ per SD of log-votes, 1 = 0.6★ per SD.
+    score = T["pred"].to_numpy() - 0.6 * float(dial) ** 1.5 * popz * (mode != "watchlist")
+    # Rank by a cautious estimate: thinly-supported predictions need to clear a higher bar.
+    score = score - T["confidence"].map({"low": 0.3, "medium": 0.1, "high": 0.0}).to_numpy()
     mood_sim = None
     if mood and ctx.cs is not None:
         mv = ctx.cs.embed_text(mood)

@@ -65,7 +65,7 @@ def baselines(train: pd.DataFrame, test: pd.DataFrame, Ftr: pd.DataFrame, Fte: p
         lr = LinearRegression().fit(a[m, None], y[m])
         return np.where(np.isnan(b), ubar, lr.predict(np.nan_to_num(b)[:, None]))
 
-    out["Crowd average (TMDB)"] = calibrated("tmdb_avg")
+    out["Crowd average (TMDB)"] = calibrated("tmdb_raw")  # plain average, as a person would see it
     out["Popularity"] = calibrated("tmdb_logn")
     out["TMDB similar"] = np.where(Fte["link_n"].fillna(0) > 0, ubar + Fte["link"].fillna(0), ubar) \
         if "link" in Fte else np.full(len(test), ubar)
@@ -136,7 +136,7 @@ def watchlist_test(ctx: Context, uf: pd.DataFrame, rated: pd.DataFrame, log=prin
     scores = {
         "Hybrid (ours)": F["pred"].to_numpy(),
         "Standard CF (SVD)": F["cf_pred"].fillna(ubar).to_numpy(),
-        "Crowd average (TMDB)": F["tmdb_avg"].fillna(0).to_numpy(),
+        "Crowd average (TMDB)": F["tmdb_raw"].fillna(0).to_numpy(),
         "Popularity": F["tmdb_logn"].fillna(0).to_numpy(),
         "TMDB similar": F["link"].fillna(0).to_numpy() + 0.01 * F["link_n"].fillna(0).to_numpy(),
     }
