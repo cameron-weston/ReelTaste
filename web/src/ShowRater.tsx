@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 
 const STEPS = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
@@ -8,14 +8,17 @@ export default function ShowRater() {
   const [data, setData] = useState<any>(null);
   const [hover, setHover] = useState<Record<number, number>>({});
 
+  const left = useRef<number | null>(null);
   const load = (query = q) => api.showQueue(query).then(setData);
   useEffect(() => { load(""); }, []);
+  useEffect(() => { left.current = data?.items?.length ?? null; }, [data]);
 
   const rate = async (id: number, rating: number | null, status: string) => {
+    // Remove immediately (functional update, so quick successive clicks never resurrect a card).
+    setData((d: any) => ({ ...d, items: d.items.filter((x: any) => x.tmdb_id !== id),
+      n_rated: d.n_rated + (status === "rated" ? 1 : 0) }));
     await api.rateShow(id, rating, status);
-    setData({ ...data, items: data.items.filter((x: any) => x.tmdb_id !== id),
-      n_rated: data.n_rated + (status === "rated" ? 1 : 0) });
-    if (data.items.length <= 4) load();
+    if ((left.current ?? 99) <= 5) load();
   };
 
   return (

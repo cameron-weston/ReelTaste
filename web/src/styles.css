@@ -18,7 +18,8 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
 .muted { color: var(--muted); font-size: .88em; }
 
 .app { max-width: 1240px; margin: 0 auto; padding: 0 16px 60px; }
-header { display: flex; align-items: center; gap: 24px; padding: 16px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header { display: flex; align-items: center; gap: 24px; padding: 16px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap;
+  position: sticky; top: 0; z-index: 10; background: var(--bg); }
 .brand { font-family: Fraunces, Georgia, serif; font-size: 24px; color: var(--accent); }
 nav { display: flex; gap: 4px; }
 nav button { background: none; border-color: transparent; color: var(--muted); }
@@ -101,7 +102,7 @@ h2 { font-family: Fraunces, Georgia, serif; font-weight: 600; font-size: 18px; m
 .score h2 { margin-top: 28px; }
 h3 { font-size: 15px; margin: 0 0 8px; }
 .bars { display: flex; flex-direction: column; gap: 5px; }
-.bar { display: grid; grid-template-columns: 130px 1fr 120px; gap: 8px; align-items: center; font-size: 13px; }
+.bar { display: grid; grid-template-columns: minmax(80px, 1.4fr) minmax(40px, 1fr) auto; gap: 8px; align-items: center; font-size: 13px; }
 .bl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bt { background: var(--panel2); height: 10px; border-radius: 3px; overflow: hidden; }
 .bt span { display: block; height: 100%; background: var(--accent); }

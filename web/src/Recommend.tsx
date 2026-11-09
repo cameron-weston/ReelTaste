@@ -115,10 +115,14 @@ export default function Recommend({ kind, llmReady, status }: Props) {
             <div className="body">
               <h3><a href={c.letterboxd_url || c.tmdb_url} target="_blank" rel="noreferrer">{c.title}</a> <span className="muted">{c.year}</span></h3>
               <div className="sub">
-                {c.directors.slice(0, 1).join(", ")}
-                {c.kind === "movie" ? c.runtime ? ` · ${c.runtime} min` : "" : ` · ${c.seasons ?? "?"} season${c.seasons === 1 ? "" : "s"} · ${c.status ?? ""}`}
-                {c.networks?.length ? ` · ${c.networks[0]}` : ""}
-                {c.language !== "en" ? ` · ${c.language?.toUpperCase()}` : ""}
+                {[
+                  c.directors[0],
+                  c.kind === "movie" ? (c.runtime ? `${c.runtime} min` : null)
+                    : `${c.seasons ?? "?"} season${c.seasons === 1 ? "" : "s"}${c.episodes ? ` (${c.episodes} eps)` : ""}`,
+                  c.kind === "tv" ? (c.status === "Ended" || c.status === "Canceled" ? "finished" : "ongoing") : null,
+                  c.networks?.[0],
+                  c.language !== "en" ? c.language?.toUpperCase() : null,
+                ].filter(Boolean).join(" · ")}
               </div>
               <div className="pred">
                 <span className="stars">{stars(c.predicted)}</span>

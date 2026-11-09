@@ -69,10 +69,13 @@ def _neighbours(key: str, rated: pd.DataFrame, ctx, k: int = 3) -> list[dict]:
     if v is not None:
         cfs = np.array([(lambda u: float(u @ v) if u is not None else 0.0)(cf.vec(x)) for x in rated["ml_id"]])
         sims = np.maximum(sims, cfs)
-    score = sims * (rated["rating"].to_numpy() - 2.5)
+    # Cite the closest films the user liked (3.5★+); closeness first, so broad favourites
+    # don't show up as the "reason" for everything.
+    liked = rated["rating"].to_numpy() >= 3.5
+    score = np.where(liked, sims, -1.0)
     out = []
     for i in np.argsort(-score)[:k]:
-        if score[i] <= 0:
+        if score[i] <= 0.15:
             break
         r = rated.iloc[i]
         out.append(dict(name=r["name"], year=None if pd.isna(r["year"]) else int(r["year"]),
@@ -82,15 +85,14 @@ def _neighbours(key: str, rated: pd.DataFrame, ctx, k: int = 3) -> list[dict]:
 
 def _shared(key: str, nbrs: list[dict], meta: dict) -> list[str]:
     m = meta.get(key, {})
-    out = []
+    out, people = [], set()
     for role, field in (("director", "directors"), ("writer", "writers"), ("cinematographer", "dop"), ("composer", "composer")):
         mine = set(m.get(field) or [])
         for n in nbrs:
-            both = mine & set(meta.get(n["key"], {}).get(field) or [])
-            for p in both:
-                s = f"same {role}, {p}"
-                if s not in out:
-                    out.append(s)
+            for p in sorted(mine & set(meta.get(n["key"], {}).get(field) or [])):
+                if p not in people:  # one mention per person, at their most notable role
+                    people.add(p)
+                    out.append(f"same {role} ({p})")
     kws = {}
     for n in nbrs:
         for kw in set(m.get("keywords") or []) & set(meta.get(n["key"], {}).get("keywords") or []):
@@ -107,7 +109,8 @@ def _why_text(nbrs, shared) -> str:
     names = " and ".join(f"{n['name']} ({STAR.get(n['rating'], n['rating'])})" for n in nbrs[:2])
     s = f"Close to {names}."
     if shared:
-        s += " " + "; ".join(shared).capitalize() + "."
+        txt = "; ".join(shared)
+        s += " " + txt[0].upper() + txt[1:] + "."
     return s
 
 
@@ -252,7 +255,10 @@ def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filte
     # counts. Their ranking pays for that uncertainty; predictions themselves are unchanged.
     votes = np.array([meta[k].get("vote_count") or 0 for k in keys], float)
     content_only = (T["route"].to_numpy() == "content")
-    score = score - content_only * 0.6 * np.sqrt(500 / (votes + 500))
+    if kind == "tv":  # every show is content-only and TV fan bases inflate small samples harder
+        score = score - 0.9 * np.sqrt(1000 / (votes + 1000))
+    else:
+        score = score - content_only * 0.6 * np.sqrt(500 / (votes + 500))
     fit = np.zeros(len(keys))
     if mood:
         # Mood fit: lexicon (genres/keywords, with negations) plus plot-text similarity.

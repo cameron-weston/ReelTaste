@@ -60,6 +60,39 @@ when the app can reach it. Without it, everything works except the Claude reorde
    fitted on the same data. Live, every pick shown and every baseline's would-be pick are logged and
    matched to what you later rate.
 
+## Offline results (build of 2026-11-09)
+
+Trained on the 667 earliest ratings and tested on the 167 most recent (from 2024-09-20).
+
+| Row | Hybrid | TMDB crowd average | Standard CF |
+|---|---|---|---|
+| Films with crowd data (69) | RMSE 0.668, rank corr. 0.68, top-quarter 4★+ 100% | 0.663, 0.72, 88% | 0.689, 0.61, 88% |
+| New releases (98) | RMSE 0.697, rank corr. 0.58, top-quarter 71% | 0.731, 0.53, 75% | — |
+| All (167) | RMSE 0.685, MAE 0.535 | 0.704, 0.558 | 0.782, 0.624 |
+
+It beats standard CF, popularity, TMDB "similar" and your average on every row. Against the plain
+TMDB average it wins on error overall and on new releases (better in 91% / 99% of bootstrap
+resamples). On films with crowd data it ties on RMSE and trails on rank correlation and AUC. The live
+hit rate is the real test.
+
+### Choices and how they were made
+
+Settings were picked on a time-based slice inside the training years (fit on ratings up to
+2023-09, validate on 2023-09 → 2024-09), never on the test set:
+
+- Taste signals use your centred rating, not your departure from the crowd (0.623 vs 0.635).
+- Recency half-life of 3 years (vs 1.5, 6 and 12).
+- One cross-validated blend (ridge won), not an average of ridge and gradient boosting.
+- Plain TMDB averages for films (shrinkage tied on validation, so the simpler option). Shows are
+  shrunk toward the mean and shifted onto the film scale (TMDB rates TV ~1.2 points higher).
+
+Disclosure: the test set was looked at twice during development (after fixing a MovieLens ID
+mapping bug and when checking the shrinkage). Neither changed a setting the validation slice
+didn't already support, but the numbers above are not from a perfectly untouched holdout.
+
+Ranking (not prediction) also subtracts uncertainty for low-confidence titles and for titles without
+MovieLens data with few TMDB votes, which are often fan-inflated.
+
 ## Data
 
 Everything personal stays in `data/` (git-ignored): your export, the TMDB cache, models, and
