@@ -120,3 +120,35 @@ td, th { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: lef
 .tablewrap { margin-bottom: 14px; overflow-x: auto; }
 .ops { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 20px; }
 .log { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 12px; max-height: 220px; overflow: auto; }
+
+.actions button.watched { border-color: var(--good); color: var(--good); }
+.card.isLogged { border-color: #2f5a42; }
+.logged { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--good); }
+
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 50; display: flex; align-items: center;
+  justify-content: center; padding: 16px; }
+.logbox { position: relative; display: flex; gap: 22px; width: min(720px, 100%); max-height: calc(100vh - 32px); overflow: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px; outline: none;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+.logbox .x { position: absolute; top: 8px; right: 10px; background: none; border: none; font-size: 22px; color: var(--muted); }
+.logposter { flex: 0 0 170px; }
+.logposter img, .logposter .noimg { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 6px; display: block; }
+.logform { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.logkicker { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+.logform h2 { margin: -6px 0 0; font-size: 24px; }
+.logrow { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 14px; }
+.logrow input[type=date] { color-scheme: dark; }
+.logform textarea { width: 100%; resize: vertical; background: var(--bg); }
+.logrow.rate { align-items: flex-end; gap: 26px; }
+.lbl { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.starpick.big { height: 30px; padding-left: 3px; }
+.starpick.big .half { width: 16px; height: 30px; }
+.starpick.big .half::before { font-size: 27px; line-height: 30px; }
+.starpick.big .val { width: auto; min-width: 34px; margin-left: 10px; font-weight: 600; }
+.heart { background: none; border: none; padding: 0 4px; font-size: 28px; line-height: 30px; color: var(--muted); }
+.heart.on { color: #e86a7a; }
+.heart.small { font-size: 13px; padding: 0 2px; }
+.logrow .save { margin-left: auto; padding: 8px 22px; }
+.lognote { line-height: 1.45; }
+.lognote a { color: var(--blue); }
+@media (max-width: 640px) { .logbox { flex-direction: column; } .logposter { flex-basis: auto; width: 110px; } }

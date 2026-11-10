@@ -41,7 +41,14 @@ def build_context(uf: pd.DataFrame | None = None) -> Context:
 def merged_user_films() -> pd.DataFrame:
     """Export + newer RSS entries (ratings, watches, rewatches) merged into one table."""
     uf = catalog.user_films()
-    rss = db.rss_entries()
+    rss = db.rss_entries().assign(source="rss", review="")
+    logs = db.app_logs()
+    if len(logs):
+        is_tv = logs["kind"].eq("tv")
+        logs = logs.assign(source="app", tmdb_movie=logs["tmdb_id"].where(~is_tv),
+                           tmdb_tv=logs["tmdb_id"].where(is_tv))
+    cols = ["name", "year", "rating", "watched_date", "rewatch", "liked", "tmdb_movie", "tmdb_tv", "source", "review"]
+    rss = pd.concat([x[cols] for x in (rss, logs) if len(x)], ignore_index=True) if len(rss) or len(logs) else rss
     if len(rss) == 0:
         return uf
     ml = movielens.movies()
@@ -59,8 +66,8 @@ def merged_user_films() -> pd.DataFrame:
             new_rows.append(dict(key=letterboxd.key(r.name, r.year), name=r.name,
                                  year=int(r.year) if str(r.year).isdigit() else None,
                                  rating=r.rating, rating_date=r.watched_date, watched=True,
-                                 rewatches=int(r.rewatch), liked=bool(r.liked), watchlist=False, review="",
-                                 last_watched=r.watched_date, source="rss", backfill=False, kind=kind,
+                                 rewatches=int(r.rewatch), liked=bool(r.liked), watchlist=False,
+                                 review=r.review or "", last_watched=r.watched_date, source=r.source, backfill=False, kind=kind,
                                  tmdb_id=int(tid) if pd.notna(tid) else None,
                                  ml_id=t2m.get(int(tid)) if (pd.notna(tid) and kind == "movie") else None))
             by_key[new_rows[-1]["key"]] = len(uf) + len(new_rows) - 1
@@ -74,6 +81,10 @@ def merged_user_films() -> pd.DataFrame:
             uf.at[i, "backfill"] = False
         if r.rewatch:
             uf.at[i, "rewatches"] = int(uf.at[i, "rewatches"]) + 1
+        if r.liked:
+            uf.at[i, "liked"] = True
+        if r.review:
+            uf.at[i, "review"] = r.review
     if new_rows:
         add = pd.DataFrame(new_rows)
         add["tmdb_id"] = add["tmdb_id"].astype("Int64")

@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS blocklist(value TEXT PRIMARY KEY, label TEXT, ts REAL
 CREATE TABLE IF NOT EXISTS rss_entries(guid TEXT PRIMARY KEY, name TEXT, year TEXT, rating REAL,
     watched_date TEXT, rewatch INTEGER, liked INTEGER, tmdb_movie INTEGER, tmdb_tv INTEGER, ts REAL);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS app_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, tmdb_id INTEGER, name TEXT,
+    year TEXT, rating REAL, liked INTEGER, watched_date TEXT, rewatch INTEGER, review TEXT, ts REAL);
 """
 
 
@@ -119,3 +121,27 @@ def save_rss(df: pd.DataFrame) -> int:
 
 def rss_entries() -> pd.DataFrame:
     return q("SELECT * FROM rss_entries")
+
+
+def add_log(kind, tmdb_id, name, year, rating, liked, watched_date, rewatch, review) -> int:
+    """A diary entry logged in the app (the in-app equivalent of logging on Letterboxd)."""
+    with conn() as c:
+        cur = c.execute("INSERT INTO app_logs(kind,tmdb_id,name,year,rating,liked,watched_date,rewatch,review,ts) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (kind, tmdb_id, name, year, rating, int(liked), watched_date, int(rewatch), review, time.time()))
+        return int(cur.lastrowid)
+
+
+def app_logs() -> pd.DataFrame:
+    return q("SELECT * FROM app_logs ORDER BY ts")
+
+
+def delete_log(log_id: int):
+    """Undo a log, including the "watched" marker that hides the title from picks."""
+    with conn() as c:
+        r = c.execute("SELECT kind, tmdb_id FROM app_logs WHERE id=?", (log_id,)).fetchone()
+        if r is None:
+            return
+        c.execute("DELETE FROM app_logs WHERE id=?", (log_id,))
+        c.execute("DELETE FROM feedback WHERE rowid = (SELECT max(rowid) FROM feedback "
+                  "WHERE kind=? AND tmdb_id=? AND action='watched')", (r["kind"], r["tmdb_id"]))

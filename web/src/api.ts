@@ -30,6 +30,8 @@ export const api = {
   llm: (force = false) => req<{ backend: string; ready: boolean; detail: string }>(`/api/llm?force=${force}`),
   recommend: (body: object) => req<RecResponse>("/api/recommend", { method: "POST", body: JSON.stringify(body) }),
   feedback: (body: object) => req("/api/feedback", { method: "POST", body: JSON.stringify(body) }),
+  log: (body: object) => req("/api/log", { method: "POST", body: JSON.stringify(body) }),
+  unlog: (id: number) => req(`/api/log?id=${id}`, { method: "DELETE" }),
   blocks: () => req<{ value: string; label: string }[]>("/api/blocklist"),
   block: (value: string, label: string) => req("/api/blocklist", { method: "POST", body: JSON.stringify({ value, label }) }),
   unblock: (value: string) => req(`/api/blocklist?value=${encodeURIComponent(value)}`, { method: "DELETE" }),

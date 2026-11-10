@@ -51,13 +51,16 @@ def _run_build(full: bool):
     return True
 
 
+def _new_since_train() -> int:
+    uf = pipeline.merged_user_films()
+    have = int(uf["rating"].notna().sum())
+    return have - int(db.get_meta("trained_n_ratings", have))
+
+
 def _maybe_retrain():
     n = pipeline.refresh_rss()
-    if n:
-        uf = pipeline.merged_user_films()
-        have = int(uf["rating"].notna().sum())
-        if have - int(db.get_meta("trained_n_ratings", have)) >= RETRAIN_EVERY:
-            _run_build(full=False)
+    if n and _new_since_train() >= RETRAIN_EVERY:
+        _run_build(full=False)
     return n
 
 
@@ -103,15 +106,51 @@ def rec(r: Rec):
 class Feedback(BaseModel):
     kind: str
     tmdb_id: int
-    action: str  # knew | not_interested | watchlist
+    action: str  # watched | knew | not_interested | watchlist
     query_id: str | None = None
 
 
 @app.post("/api/feedback")
 def feedback(f: Feedback):
-    if f.action not in ("knew", "not_interested", "watchlist", "undo"):
+    if f.action not in ("knew", "watched", "not_interested", "watchlist", "undo"):
         raise HTTPException(400, "bad action")
     db.add_feedback(f.kind, f.tmdb_id, f.action, f.query_id)
+    return {"ok": True}
+
+
+class Log(BaseModel):
+    kind: str
+    tmdb_id: int
+    rating: float | None = None
+    liked: bool = False
+    watched_date: str | None = None
+    rewatch: bool = False
+    review: str = ""
+    query_id: str | None = None
+
+
+@app.post("/api/log")
+def log_watch(entry: Log):
+    """Log a watch from a recommendation card. It joins your ratings like a Letterboxd diary entry."""
+    if entry.kind not in ("movie", "tv"):
+        raise HTTPException(400, "bad kind")
+    if entry.rating is not None and not (0.5 <= entry.rating <= 5 and (entry.rating * 2) % 1 == 0):
+        raise HTTPException(400, "rating must be 0.5-5 in half stars")
+    m = pipeline.context().meta.get(f"{entry.kind}:{entry.tmdb_id}") or {}
+    date = entry.watched_date or time.strftime("%Y-%m-%d")
+    log_id = db.add_log(entry.kind, entry.tmdb_id, m.get("title") or m.get("name") or "", str(m.get("year") or ""),
+                        entry.rating, entry.liked, date, entry.rewatch, entry.review.strip())
+    db.add_feedback(entry.kind, entry.tmdb_id, "watched", entry.query_id)
+    n = _new_since_train()
+    if n >= RETRAIN_EVERY and not _job["running"]:
+        _run_build(full=False)
+    return {"ok": True, "id": log_id, "new_since_train": n, "retrain_every": RETRAIN_EVERY,
+            "retraining": _job["running"]}
+
+
+@app.delete("/api/log")
+def undo_log(id: int):
+    db.delete_log(id)
     return {"ok": True}
 
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, Card, RecResponse, Status, stars } from "./api";
 import ShowRater from "./ShowRater";
+import LogModal, { Logged } from "./LogModal";
 
 type Props = { kind: "movie" | "tv"; llmReady: boolean; status: Status | null };
 
@@ -22,6 +23,8 @@ export default function Recommend({ kind, llmReady, status }: Props) {
   const [err, setErr] = useState("");
   const [done, setDone] = useState<Record<number, string>>({});
   const [rater, setRater] = useState(false);
+  const [logging, setLogging] = useState<Card | null>(null);
+  const [logged, setLogged] = useState<Record<number, Logged>>({});
 
   const ready = kind === "movie" ? status?.has_films : status?.has_shows;
 
@@ -37,7 +40,7 @@ export default function Recommend({ kind, llmReady, status }: Props) {
       if (r.error) setErr(r.error);
       setRes(r);
       setItems(more ? [...items, ...r.items] : r.items);
-      if (!more) setDone({});
+      if (!more) { setDone({}); setLogged({}); }
     } catch (e: any) { setErr(String(e.message || e)); }
     setLoading(false);
   };
@@ -48,6 +51,16 @@ export default function Recommend({ kind, llmReady, status }: Props) {
     await api.feedback({ kind: c.kind, tmdb_id: c.tmdb_id, action, query_id: res?.query_id });
     setDone({ ...done, [c.tmdb_id]: action });
     if (action === "watchlist" && c.letterboxd_url) window.open(c.letterboxd_url, "_blank");
+  };
+  const onLogged = (l: Logged) => {
+    const c = logging!;
+    setLogged({ ...logged, [c.tmdb_id]: l });
+    setLogging(null);
+  };
+  const unlog = async (c: Card) => {
+    await api.unlog(logged[c.tmdb_id].id);
+    const { [c.tmdb_id]: _, ...rest } = logged;
+    setLogged(rest);
   };
   const block = async (c: Card, value: string, label: string) => {
     await api.block(value, label);
@@ -109,7 +122,7 @@ export default function Recommend({ kind, llmReady, status }: Props) {
 
       <div className="grid">
         {items.map((c, i) => (
-          <article key={c.key} className={`card ${done[c.tmdb_id] ? "dim" : ""}`}>
+          <article key={c.key} className={`card ${done[c.tmdb_id] ? "dim" : ""} ${logged[c.tmdb_id] ? "isLogged" : ""}`}>
             <div className="poster">{c.poster ? <img src={c.poster} alt="" loading="lazy" /> : <div className="noimg">{c.title}</div>}
               <span className="rank">{i + 1}</span></div>
             <div className="body">
@@ -134,8 +147,14 @@ export default function Recommend({ kind, llmReady, status }: Props) {
                 <div className="because">{c.because.map((b) => <span key={b.name}>{b.name} {stars(b.rating)}</span>)}</div>
               )}
               <div className="actions">
-                {done[c.tmdb_id] ? <span className="muted">✓ {done[c.tmdb_id].replace("_", " ")}</span> : <>
-                  <button onClick={() => fb(c, "knew")}>Already knew it</button>
+                {logged[c.tmdb_id] ? <span className="logged">
+                  ✓ Logged{logged[c.tmdb_id].rating ? <> · <span className="stars">{stars(logged[c.tmdb_id].rating!)}</span></> : " as watched"}
+                  {logged[c.tmdb_id].liked && <span className="heart on small">♥</span>}
+                  <span className="muted"> · {logged[c.tmdb_id].retraining ? "retraining now"
+                    : logged[c.tmdb_id].rating ? `retrains in ${logged[c.tmdb_id].left} more` : ""}</span>
+                  <button className="link" onClick={() => unlog(c)}>Undo</button>
+                </span> : done[c.tmdb_id] ? <span className="muted">✓ {done[c.tmdb_id].replace("_", " ")}</span> : <>
+                  <button className="watched" onClick={() => setLogging(c)}>Watched it!</button>
                   <button onClick={() => fb(c, "not_interested")}>Not interested</button>
                   {c.kind === "movie" && <button onClick={() => fb(c, "watchlist")}>+ Watchlist</button>}
                   <details className="blockmenu"><summary>Block</summary>
@@ -149,6 +168,7 @@ export default function Recommend({ kind, llmReady, status }: Props) {
           </article>
         ))}
       </div>
+      {logging && <LogModal card={logging} queryId={res?.query_id} onClose={() => setLogging(null)} onSaved={onLogged} />}
       {items.length > 0 && <div className="more"><button onClick={() => ask(true)} disabled={loading}>More</button>
         <span className="muted">{res?.n_candidates?.toLocaleString()} eligible {kind === "movie" ? "films" : "shows"}</span></div>}
     </div>

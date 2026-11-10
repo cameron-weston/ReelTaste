@@ -35,7 +35,7 @@ export default function ShowRater() {
             <div className="t">{s.title} <span className="muted">{s.year}</span></div>
             <div className="starpick" onMouseLeave={() => setHover({ ...hover, [s.tmdb_id]: 0 })}>
               {STEPS.map((v) => (
-                <span key={v} className={`half ${v % 1 ? "r" : "l"} ${(hover[s.tmdb_id] || 0) >= v ? "on" : ""}`}
+                <span key={v} className={`half ${v % 1 ? "l" : "r"} ${(hover[s.tmdb_id] || 0) >= v ? "on" : ""}`}
                   onMouseEnter={() => setHover({ ...hover, [s.tmdb_id]: v })} onClick={() => rate(s.tmdb_id, v, "rated")} />
               ))}
               <span className="val">{hover[s.tmdb_id] ? hover[s.tmdb_id].toFixed(1) : ""}</span>

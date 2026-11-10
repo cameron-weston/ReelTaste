@@ -219,7 +219,7 @@ def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filte
     meta = ctx.meta
     blocks = set(db.blocklist()["value"])
     fb = db.feedback()
-    dismissed = {f"{r.kind}:{r.tmdb_id}" for r in fb[fb["action"].eq("not_interested")].itertuples()}
+    dismissed = {f"{r.kind}:{r.tmdb_id}" for r in fb[fb["action"].isin(["not_interested", "watched"])].itertuples()}
     seen, wl = state["seen"], state["watchlist"]
     parsed = moodlib.parse(mood) if mood else {"filters": {}, "want": [], "avoid": []}
     if kind == "tv":
