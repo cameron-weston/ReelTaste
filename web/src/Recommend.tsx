@@ -36,12 +36,13 @@ export default function Recommend({ kind, llmReady, status }: Props) {
     try {
       const filters: any = {};
       for (const [k, v] of Object.entries(f)) if (v !== "" && v !== null && v !== undefined) filters[k] = v;
-      if (!more || !lastAsk.current) lastAsk.current = { kind, mode, mood, filters, dial };
+      const q = more && lastAsk.current ? lastAsk.current : { kind, mode, mood, filters, dial };
       const r = await api.recommend({
-        ...lastAsk.current, n: 10, offset: more ? items.length : 0,
+        ...q, n: 10, offset: more ? items.length : 0,
         use_llm: useLlm && llmReady && !more, query_id: more ? res?.query_id : null, exclude: more ? items.map((c) => c.key) : [],
       });
       if (id !== reqId.current) return;
+      if (!more) lastAsk.current = q; // only once these results are the ones on screen
       if (r.error) setErr(r.error);
       setRes(r);
       setItems((prev) => more ? [...prev, ...r.items.filter((x) => !prev.some((p) => p.key === x.key))] : r.items);
