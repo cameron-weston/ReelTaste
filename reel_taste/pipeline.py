@@ -1,7 +1,9 @@
 """End-to-end build: match → catalogs → content space → offline test → production scores."""
 from __future__ import annotations
 
+import os
 import pickle
+import tempfile
 import threading
 import time
 
@@ -19,7 +21,7 @@ STATE = ARTIFACTS / "state.pkl"
 _lock = threading.Lock()
 
 
-def build_context(uf: pd.DataFrame | None = None) -> Context:
+def build_context() -> Context:
     cf = CF.load()
     cs, meta = None, {}
     if catalog.FILM_CATALOG.exists():
@@ -39,58 +41,84 @@ def build_context(uf: pd.DataFrame | None = None) -> Context:
 
 
 def merged_user_films() -> pd.DataFrame:
-    """Export + newer RSS entries (ratings, watches, rewatches) merged into one table."""
+    """Export + newer RSS entries + in-app logs (ratings, watches, rewatches) merged into one table."""
     uf = catalog.user_films()
     rss = db.rss_entries().assign(source="rss", review="")
+    # Editing a rating on Letterboxd yields a second RSS entry for the same watch; keep the newest.
+    rss = rss.sort_values("ts").drop_duplicates(["name", "year", "watched_date"], keep="last")
     logs = db.app_logs()
     if len(logs):
         is_tv = logs["kind"].eq("tv")
         logs = logs.assign(source="app", tmdb_movie=logs["tmdb_id"].where(~is_tv),
                            tmdb_tv=logs["tmdb_id"].where(is_tv))
-    cols = ["name", "year", "rating", "watched_date", "rewatch", "liked", "tmdb_movie", "tmdb_tv", "source", "review"]
-    rss = pd.concat([x[cols] for x in (rss, logs) if len(x)], ignore_index=True) if len(rss) or len(logs) else rss
-    if len(rss) == 0:
+    cols = ["name", "year", "rating", "watched_date", "rewatch", "liked", "tmdb_movie", "tmdb_tv", "source",
+            "review", "ts"]
+    entries = [x[cols] for x in (rss, logs) if len(x)]
+    if not entries:
         return uf
-    ml = movielens.movies()
+    entries = pd.concat(entries, ignore_index=True)
+    entries["watched_date"] = entries["watched_date"].fillna(
+        pd.to_datetime(entries["ts"], unit="s").dt.strftime("%Y-%m-%d"))
+    entries = entries.sort_values(["watched_date", "ts"], kind="mergesort")
+
     t2m = movielens.tmdb_to_ml()
-    by_tmdb = {(k, int(t)): i for i, (k, t) in enumerate(zip(uf["kind"], uf["tmdb_id"])) if pd.notna(t)}
-    by_key = {k: i for i, k in enumerate(uf["key"])}
-    uf = uf.copy()
-    new_rows = []
-    for r in rss.sort_values("watched_date").itertuples():
+    # first_rating: the rating from a first watch (the export's rating stands in for its own rows).
+    rows = uf.assign(first_rating=uf["rating"], first_rating_date=uf["rating_date"]).to_dict("records")
+    n_export = len(rows)
+    by_tmdb = {(r["kind"], int(r["tmdb_id"])): i for i, r in enumerate(rows) if pd.notna(r["tmdb_id"])}
+    by_key = {r["key"]: i for i, r in enumerate(rows)}
+    for r in entries.itertuples():
         kind, tid = ("tv", r.tmdb_tv) if pd.notna(r.tmdb_tv) else ("movie", r.tmdb_movie)
-        i = by_tmdb.get((kind, int(tid))) if pd.notna(tid) else None
+        tid = int(tid) if pd.notna(tid) else None
+        key = letterboxd.key(r.name, r.year)
+        i = by_tmdb.get((kind, tid)) if tid is not None else None
         if i is None:
-            i = by_key.get(letterboxd.key(r.name, r.year))
+            i = by_key.get(key)
+        review = r.review if isinstance(r.review, str) else ""
         if i is None:
-            new_rows.append(dict(key=letterboxd.key(r.name, r.year), name=r.name,
-                                 year=int(r.year) if str(r.year).isdigit() else None,
-                                 rating=r.rating, rating_date=r.watched_date, watched=True,
-                                 rewatches=int(r.rewatch), liked=bool(r.liked), watchlist=False,
-                                 review=r.review or "", last_watched=r.watched_date, source=r.source, backfill=False, kind=kind,
-                                 tmdb_id=int(tid) if pd.notna(tid) else None,
-                                 ml_id=t2m.get(int(tid)) if (pd.notna(tid) and kind == "movie") else None))
-            by_key[new_rows[-1]["key"]] = len(uf) + len(new_rows) - 1
+            rows.append(dict(key=key, name=r.name, year=int(r.year) if str(r.year).isdigit() else None,
+                             rating=r.rating, rating_date=r.watched_date, watched=True,
+                             rewatches=int(r.rewatch), liked=bool(r.liked), watchlist=False, review=review,
+                             last_watched=r.watched_date, source=r.source, backfill=False, kind=kind,
+                             tmdb_id=tid, ml_id=t2m.get(tid) if (tid is not None and kind == "movie") else None,
+                             first_rating=None if r.rewatch else r.rating,
+                             first_rating_date=None if (r.rewatch or pd.isna(r.rating)) else r.watched_date))
+            i = len(rows) - 1
+            by_key[key] = i
+            if tid is not None:
+                by_tmdb[(kind, tid)] = i
             continue
-        if i >= len(uf):
+        row = rows[i]
+        # The export already contains RSS entries up to its own last watch; don't count them twice.
+        if r.source == "rss" and i < n_export and str(r.watched_date) <= str(row.get("last_watched") or ""):
             continue
-        uf.at[i, "watched"] = True
-        if pd.notna(r.rating) and (pd.isna(uf.at[i, "rating"]) or str(uf.at[i, "rating_date"]) < str(r.watched_date)):
-            uf.at[i, "rating"] = r.rating
-            uf.at[i, "rating_date"] = r.watched_date
-            uf.at[i, "backfill"] = False
+        row["watched"] = True
+        if pd.notna(r.rating) and (pd.isna(row["rating"]) or str(row["rating_date"]) <= str(r.watched_date)):
+            row.update(rating=r.rating, rating_date=r.watched_date, backfill=False)
+        if pd.notna(r.rating) and not r.rewatch and pd.isna(row.get("first_rating")):
+            row.update(first_rating=r.rating, first_rating_date=r.watched_date)
         if r.rewatch:
-            uf.at[i, "rewatches"] = int(uf.at[i, "rewatches"]) + 1
+            row["rewatches"] = int(row["rewatches"] or 0) + 1
         if r.liked:
-            uf.at[i, "liked"] = True
-        if r.review:
-            uf.at[i, "review"] = r.review
-    if new_rows:
-        add = pd.DataFrame(new_rows)
-        add["tmdb_id"] = add["tmdb_id"].astype("Int64")
-        add["ml_id"] = add["ml_id"].astype("Int64")
-        uf = pd.concat([uf, add], ignore_index=True)
-    return uf
+            row["liked"] = True
+        if review:
+            row["review"] = review
+        if str(r.watched_date) > str(row.get("last_watched") or ""):
+            row["last_watched"] = r.watched_date
+    out = pd.DataFrame(rows, columns=[*uf.columns, "first_rating", "first_rating_date"])
+    out["first_rating"] = pd.to_numeric(out["first_rating"], errors="coerce")
+    for c in ("tmdb_id", "ml_id"):
+        out[c] = pd.array([int(v) if pd.notna(v) else None for v in out[c]], dtype="Int64")
+    for c in ("watched", "liked", "backfill", "watchlist"):
+        if c in out:
+            out[c] = out[c].fillna(False).astype(bool)
+    return out
+
+
+def n_ratings() -> int:
+    """Ratings the model learns from: films and shows in the merged table plus the show rating session."""
+    sr = db.show_ratings()
+    return int(merged_user_films()["rating"].notna().sum()) + int(sr["status"].eq("rated").sum())
 
 
 def refresh_rss(log=print) -> int:
@@ -115,15 +143,19 @@ def build(full: bool = True, log=print):
             log("fitting content space")
             ContentSpace().fit({"movie": catalog.film_catalog(), "tv": catalog.tv_catalog()}).save()
         uf = merged_user_films()
-        ctx = build_context(uf)
+        # Count what this build trains on now, so ratings logged while it runs still count as new.
+        n_trained = int(uf["rating"].notna().sum()) + int(db.show_ratings()["status"].eq("rated").sum())
+        ctx = build_context()
         log("offline test")
         evaluate(ctx, uf, log)
         log("scoring catalogs")
         state = score_all(ctx, uf, log)
-        with open(STATE, "wb") as f:
+        fd, tmp = tempfile.mkstemp(dir=STATE.parent, suffix=".tmp")  # unique, so two builds never share it
+        with os.fdopen(fd, "wb") as f:
             pickle.dump(state, f)
+        os.replace(tmp, STATE)  # readers never see a half-written file
         db.set_meta("trained_at", time.strftime("%Y-%m-%d %H:%M"))
-        db.set_meta("trained_n_ratings", int(uf["rating"].notna().sum()))
+        db.set_meta("trained_n_ratings", n_trained)
         log(f"build done in {time.time() - t0:.0f}s")
         return state
 
@@ -136,8 +168,10 @@ def _show_training(uf: pd.DataFrame) -> pd.DataFrame:
                          rewatches=r.rewatches, backfill=r.backfill))
     sr = db.show_ratings()
     for r in sr[sr["status"].eq("rated")].itertuples():
+        # Rated in the "shows you've seen" session: past watches of unknown date, so they share the
+        # backfill weight instead of counting as fresh evidence.
         rows.append(dict(key=f"tv:{int(r.tmdb_id)}", rating=r.rating,
-                         rating_date=time.strftime("%Y-%m-%d", time.localtime(r.ts)), rewatches=0, backfill=False))
+                         rating_date=time.strftime("%Y-%m-%d", time.localtime(r.ts)), rewatches=0, backfill=True))
     df = pd.DataFrame(rows, columns=["key", "rating", "rating_date", "rewatches", "backfill"])
     if len(df):
         df = df.drop_duplicates("key", keep="last")
@@ -187,21 +221,29 @@ def score_all(ctx: Context, uf: pd.DataFrame, log=print) -> dict:
     return state
 
 
-_state_cache: dict = {}
+_cache: tuple | None = None  # (mtime, state, context or None), swapped in one assignment
 
 
 def load_state() -> dict | None:
+    global _cache
     if not STATE.exists():
         return None
     mt = STATE.stat().st_mtime
-    if _state_cache.get("mt") != mt:
+    c = _cache
+    if c is None or c[0] != mt:
         with open(STATE, "rb") as f:
-            _state_cache.update(mt=mt, v=pickle.load(f), ctx=None)
-    return _state_cache["v"]
+            c = (mt, pickle.load(f), None)
+        _cache = c
+    return c[1]
 
 
 def context() -> Context:
+    global _cache
     load_state()
-    if _state_cache.get("ctx") is None:
-        _state_cache["ctx"] = build_context()
-    return _state_cache["ctx"]
+    c = _cache
+    if c is None:
+        return build_context()
+    if c[2] is None:
+        c = (c[0], c[1], build_context())
+        _cache = c
+    return c[2]

@@ -27,8 +27,12 @@ when the app can reach it. Without it, everything works except the Claude reorde
 
 ## Keeping it current
 
+- **Watched it!** on any pick opens a log: date, rewatch, review, half-star rating, like. It joins your
+  ratings like a Letterboxd diary entry (Taste page, live test, training). It is stored here only:
+  Letterboxd has no way for apps to post, so log it there too if you want it on your profile. Ratings
+  logged as rewatches don't count in the live test, since you'd seen the film before the pick.
 - The app reads your Letterboxd RSS feed on start, and from **Scoreboard → Check Letterboxd RSS**.
-  After 10 new ratings it retrains on its own.
+  After 10 new ratings (films, shows, in-app logs) it retrains on its own.
 - Every month or two, export from Letterboxd (Settings → Data → Export), unzip it over
   `data/export/`, and press **Full rebuild**. RSS misses edits and old backfills.
 
@@ -62,18 +66,18 @@ when the app can reach it. Without it, everything works except the Claude reorde
 
 ## Offline results (build of 2026-11-09)
 
-Trained on the 667 earliest ratings and tested on the 167 most recent (from 2024-09-20).
+Trained on the 667 earliest ratings and tested on the 167 most recent (from 2024-09-17).
 
 | Row | Hybrid | TMDB crowd average | Standard CF |
 |---|---|---|---|
-| Films with crowd data (69) | RMSE 0.668, rank corr. 0.68, top-quarter 4★+ 100% | 0.663, 0.72, 88% | 0.689, 0.61, 88% |
-| New releases (98) | RMSE 0.697, rank corr. 0.58, top-quarter 71% | 0.731, 0.53, 75% | — |
-| All (167) | RMSE 0.685, MAE 0.535 | 0.704, 0.558 | 0.782, 0.624 |
+| Films with crowd data (70) | RMSE 0.677, rank corr. 0.69, top-quarter 4★+ 94% | 0.691, 0.70, 88% | 0.693, 0.64, 88% |
+| New releases (97) | RMSE 0.685, rank corr. 0.60, top-quarter 71% | 0.716, 0.54, 75% | — |
+| All (167) | RMSE 0.682, MAE 0.534 | 0.706, 0.562 | 0.775, 0.622 |
 
 It beats standard CF, popularity, TMDB "similar" and your average on every row. Against the plain
-TMDB average it wins on error overall and on new releases (better in 91% / 99% of bootstrap
-resamples). On films with crowd data it ties on RMSE and trails on rank correlation and AUC. The live
-hit rate is the real test.
+TMDB average it wins on error on every row (better in 67% / 98% / 93% of bootstrap resamples) and on
+rank correlation for new releases. It trails slightly on rank correlation and AUC for films with
+crowd data, and on top-quarter hits for new releases. The live hit rate is the real test.
 
 ### Choices and how they were made
 
@@ -86,9 +90,14 @@ Settings were picked on a time-based slice inside the training years (fit on rat
 - Plain TMDB averages for films (shrinkage tied on validation, so the simpler option). Shows are
   shrunk toward the mean and shifted onto the film scale (TMDB rates TV ~1.2 points higher).
 
-Disclosure: the test set was looked at twice during development (after fixing a MovieLens ID
-mapping bug and when checking the shrinkage). Neither changed a setting the validation slice
-didn't already support, but the numbers above are not from a perfectly untouched holdout.
+Disclosure: the test set was looked at three times during development (after fixing a MovieLens ID
+mapping bug, when checking the shrinkage, and after a code review fixed train/serve skew and
+double-counted rewatches). None changed a setting the validation slice didn't already support, and
+the review fixes were kept for correctness whatever they did to the score, but the numbers above are
+not from a perfectly untouched holdout.
+
+Caveat: TMDB vote averages and counts are today's snapshot. For new releases that consensus didn't
+exist yet when you rated them, which flatters the crowd-based baselines (and the hybrid's crowd input).
 
 Ranking (not prediction) also subtracts uncertainty for low-confidence titles and for titles without
 MovieLens data with few TMDB votes, which are often fan-inflated.

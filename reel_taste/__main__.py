@@ -20,7 +20,7 @@ def main(argv: list[str]):
         from . import pipeline
         from .evaluate import evaluate
         uf = pipeline.merged_user_films()
-        res = evaluate(pipeline.build_context(uf), uf)
+        res = evaluate(pipeline.build_context(), uf)
         for row, t in res["table"].items():
             print(f"== {row}")
             for k, v in t.items():

@@ -4,6 +4,9 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import os
+import tempfile
+import time
 from pathlib import Path
 
 import httpx
@@ -41,14 +44,28 @@ def _path(kind: str, id_: int) -> Path:
 def cached(kind: str, id_: int) -> dict | None:
     p = _path(kind, id_)
     if p.exists():
-        with gzip.open(p, "rt") as f:
-            return json.load(f)
+        try:
+            with gzip.open(p, "rt") as f:
+                return json.load(f)
+        except (OSError, EOFError, json.JSONDecodeError):
+            p.unlink(missing_ok=True)  # corrupt entry: refetch it
     return None
 
 
 def _store(kind: str, id_: int, data: dict) -> None:
-    with gzip.open(_path(kind, id_), "wt") as f:
+    p = _path(kind, id_)
+    fd, tmp = tempfile.mkstemp(dir=p.parent, suffix=".tmp")
+    with os.fdopen(fd, "wb") as raw, gzip.open(raw, "wt") as f:
         json.dump(data, f)
+    os.replace(tmp, p)  # an interrupted write never leaves a truncated cache file
+
+
+def _stale(kind: str, id_: int, data: dict) -> bool:
+    """Vote counts on recent titles move fast: refresh those older than two weeks."""
+    date = (data or {}).get("date") or ""
+    if not date or date[:4] < str(time.localtime().tm_year - 2):
+        return False
+    return time.time() - _path(kind, id_).stat().st_mtime > 14 * 86400
 
 
 def _slim(raw: dict, kind: str) -> dict:
@@ -124,10 +141,16 @@ class Client:
         return {}
 
     async def details(self, kind: str, id_: int, refresh: bool = False) -> dict | None:
-        if not refresh and (c := cached(kind, id_)) is not None:
+        c = None if refresh else cached(kind, id_)
+        if c is not None and not _stale(kind, id_, c):
             return c or None
         extra = "keywords,recommendations,similar,external_ids," + ("credits" if kind == "movie" else "aggregate_credits")
-        raw = await self.get(f"/{kind}/{id_}", append_to_response=extra)
+        try:
+            raw = await self.get(f"/{kind}/{id_}", append_to_response=extra)
+        except httpx.HTTPError:
+            if c is not None:  # a failed refresh keeps the cached copy rather than failing the build
+                return c or None
+            raise
         data = _slim(raw, kind) if raw.get("id") else {}
         _store(kind, id_, data)
         return data or None

@@ -30,11 +30,14 @@ def rated_films(uf: pd.DataFrame) -> pd.DataFrame:
     df["key"] = df.apply(item_key, axis=1)
     df["w"] = evidence_weight(df).to_numpy()
     df = df.drop_duplicates("key")
-    return df.sort_values(["rating_date", "name"]).reset_index(drop=True)
+    # Undated entries sort first (treated as old), so they can never be forced into the test set.
+    return df.sort_values(["rating_date", "name"], na_position="first").reset_index(drop=True)
 
 
 def split(df: pd.DataFrame):
-    n_test = int(round(len(df) * HOLDOUT_FRACTION))
+    if len(df) < 20:
+        raise ValueError(f"need at least 20 rated films for the offline test, have {len(df)}")
+    n_test = max(1, int(round(len(df) * HOLDOUT_FRACTION)))
     return df.iloc[:-n_test].copy(), df.iloc[-n_test:].copy()
 
 

@@ -52,7 +52,7 @@ def crowd_score(ctx: Context, key: str) -> float:
     kind = key.split(":")[0]
     means = _catalog_means(ctx)
     mu = means.get(kind, 6.5)
-    c = TMDB_SHRINK[kind] if isinstance(TMDB_SHRINK, dict) else TMDB_SHRINK
+    c = TMDB_SHRINK[kind]
     a = (m["vote_average"] * n + mu * c) / (n + c)
     if kind == "tv":
         a -= means["tv"] - means["movie"]
@@ -185,13 +185,17 @@ def _learners():
     }
 
 
-def _prep(F: pd.DataFrame, cols: list[str], kind: str) -> np.ndarray:
+COUNT_FEATS = ("cf_n", "ct_n", "link_n")
+
+
+def _prep(F: pd.DataFrame, cols: list[str], kind: str, med: pd.Series) -> np.ndarray:
+    """med: training-set column medians, so targets never fill gaps from their own statistics."""
     X = F[cols].copy()
     if kind == "ridge":
-        # Missing → neutral 0 for centred signals, column median otherwise, plus missing flags.
+        # Missing → neutral 0 for centred signals, training median otherwise, plus missing flags.
         flags = X.isna().astype(float).add_suffix("_na")
         X = X.fillna({c: 0.0 for c in cols if c in ("cf_knn", "ct_knn", "ct_ridge", "link")})
-        X = X.fillna(X.median()).fillna(0.0)
+        X = X.fillna(med.reindex(cols)).fillna(0.0)
         X = pd.concat([X, flags.loc[:, flags.any()]], axis=1)
         return X
     return X.to_numpy()
@@ -227,8 +231,9 @@ class Hybrid:
             for name, make in _learners().items():
                 err, kf = [], KFold(5, shuffle=True, random_state=1)
                 for a, b in kf.split(F):
-                    Xa = _prep(F.iloc[a], cols, name)
-                    Xb = _prep(F.iloc[b], cols, name)
+                    med = F.iloc[a][cols].median()
+                    Xa = _prep(F.iloc[a], cols, name, med)
+                    Xb = _prep(F.iloc[b], cols, name, med)
                     if name == "ridge":
                         Xb = Xb.reindex(columns=Xa.columns, fill_value=0.0)
                     m = make()
@@ -240,10 +245,11 @@ class Hybrid:
                     best = (score, name)
             fitted = []
             for name in ([best[1]] if BLEND == "best" else list(_learners())):
-                X = _prep(F, cols, name)
+                med = F[cols].median()
+                X = _prep(F, cols, name, med)
                 m = _learners()[name]()
                 m.fit(X, y, **({"ridge__sample_weight": w} if name == "ridge" else {"sample_weight": w}))
-                fitted.append((name, cols, m, list(X.columns) if name == "ridge" else None))
+                fitted.append((name, cols, m, list(X.columns) if name == "ridge" else None, med))
             self.models[route] = fitted
         return self
 
@@ -254,13 +260,19 @@ class Hybrid:
         if F is None:
             F = features(self.train, targets, self.ctx)
         has_cf = F["cf_pred"].notna().to_numpy()
+        # Training features came from folds holding (k-1)/k of the ratings, so neighbour/link counts
+        # were that much smaller; scale serving counts to match.
+        Fm = F.copy()
+        for c in COUNT_FEATS:
+            if c in Fm:
+                Fm[c] = Fm[c] * (self.folds - 1) / self.folds
         out = np.full(len(F), np.nan)
         for route, mask in (("full", has_cf), ("content", ~has_cf)):
             if route not in self.models or not mask.any():
                 continue
             preds = []
-            for name, cols, m, xcols in self.models[route]:
-                X = _prep(F[mask], cols, name)
+            for name, cols, m, xcols, med in self.models[route]:
+                X = _prep(Fm[mask], cols, name, med)
                 if name == "ridge":
                     X = X.reindex(columns=xcols, fill_value=0.0)
                 preds.append(m.predict(X))

@@ -94,7 +94,7 @@ def match_user(log=print) -> pd.DataFrame:
         t2m = movielens.tmdb_to_ml()
         via = films["tmdb_id"].map(lambda t: t2m.get(int(t)) if pd.notna(t) else None)
         films["ml_id"] = pd.array(
-            [v if (v is not None and k == "movie") else (m if k != "tv" else None)
+            [v if (pd.notna(v) and k == "movie") else (m if k != "tv" else None)
              for v, m, k in zip(via, films["ml_id"], films["kind"])], dtype="Int64")
         films["matched_by"] = "tmdb"
     else:

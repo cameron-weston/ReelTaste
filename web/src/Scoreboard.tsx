@@ -10,11 +10,14 @@ const SRC: Record<string, string> = { model: "Ranker", llm: "Ranker + Claude", c
 export default function Scoreboard({ status, onBuild, llm }: { status: Status | null; onBuild: () => void; llm: any }) {
   const [s, setS] = useState<any>(null);
   const [msg, setMsg] = useState("");
-  const load = () => api.scoreboard().then(setS);
-  useEffect(() => { load(); }, [status?.built_at]);
+  const [err, setErr] = useState("");
+  const fail = (e: any) => setErr(String(e?.message || e));
+  useEffect(() => { api.scoreboard().then((x) => { setS(x); setErr(""); }).catch(fail); }, [status?.built_at]);
 
-  const build = async (full: boolean) => { await api.build(full); onBuild(); };
-  const refresh = async () => { const r = await api.refresh(); setMsg(`${r.new_rss_entries} new RSS entries${r.retraining ? " — retraining" : ""}`); onBuild(); };
+  const build = (full: boolean) => api.build(full).then(onBuild).catch(fail);
+  const refresh = () => api.refresh().then((r) => {
+    setMsg(`${r.new_rss_entries} new RSS entries${r.retraining ? " — retraining" : ""}`); onBuild();
+  }).catch(fail);
 
   const off = s?.offline;
   const live = s?.live;
@@ -27,6 +30,7 @@ export default function Scoreboard({ status, onBuild, llm }: { status: Status | 
         <span className="muted">{msg}</span>
         <span className="muted">Claude: {llm?.ready ? `ready (${llm.backend})` : `not ready — ${llm?.detail ?? "?"}`}</span>
       </section>
+      {err && <div className="banner bad">{err}</div>}
       {status?.job.running || status?.job_log?.length ? <pre className="log">{status?.job_log.join("\n")}</pre> : null}
 
       <h2>Offline test</h2>
@@ -56,14 +60,14 @@ export default function Scoreboard({ status, onBuild, llm }: { status: Status | 
       </>}
 
       <h2>Live test</h2>
-      <p className="muted">Every pick shown is logged, along with what the baselines would have shown. When a later RSS entry or export shows you watched one, its rating counts here.
+      <p className="muted">Every pick shown is logged, along with what the baselines would have shown. When you log one with “Watched it!”, or a later RSS entry or export shows you watched it for the first time, its rating counts here.
         The bar to beat is your 4★+ rate since 2023: <b>{live?.bar ? Math.round(live.bar * 100) + "%" : "—"}</b>.</p>
-      {!live || !Object.keys(live.sources).length ? <div className="empty">Nothing logged yet. Ask for recommendations, watch some, log them on Letterboxd.</div> :
-        <table className="metrics"><thead><tr><th>Source</th><th>Recommended</th><th>Watched</th><th>Rated 4★+</th><th>Hit rate</th><th>Avg rating</th></tr></thead>
+      {!live || !Object.keys(live.sources).length ? <div className="empty">Nothing logged yet. Ask for recommendations, watch some, and press “Watched it!” or log them on Letterboxd.</div> :
+        <div className="tablewrap"><table className="metrics"><thead><tr><th>Source</th><th>Recommended</th><th>Watched</th><th>Rated 4★+</th><th>Hit rate</th><th>Avg rating</th></tr></thead>
           <tbody>{Object.values(live.sources).map((v: any) => (
             <tr key={v.kind + v.source}><td>{v.kind === "tv" ? "Shows · " : "Films · "}{SRC[v.source] ?? v.source}</td><td>{v.recommended}</td><td>{v.watched}</td><td>{v.hits}</td>
               <td className={v.hit_rate != null && live.bar != null && v.hit_rate > live.bar ? "best" : ""}>{v.hit_rate != null ? Math.round(v.hit_rate * 100) + "%" : "—"}</td><td>{v.mean_rating ?? "—"}</td></tr>))}
-          </tbody></table>}
+          </tbody></table></div>}
       {live?.feedback && Object.keys(live.feedback).length > 0 && <p className="muted">Feedback so far: {Object.entries(live.feedback).map(([k, v]) => `${k.replace("_", " ")} ${v}`).join(" · ")}</p>}
       <Blocks />
     </div>
@@ -72,9 +76,12 @@ export default function Scoreboard({ status, onBuild, llm }: { status: Status | 
 
 function Blocks() {
   const [b, setB] = useState<{ value: string; label: string }[]>([]);
-  useEffect(() => { api.blocks().then(setB); }, []);
+  const [err, setErr] = useState("");
+  useEffect(() => { api.blocks().then(setB).catch((e) => setErr(String(e.message || e))); }, []);
+  if (err) return <div className="banner bad">{err}</div>;
   if (!b.length) return null;
   return <section><h2>Block list</h2><div className="chips">{b.map((x) => (
     <span className="chip" key={x.value}>{x.value.split(":")[0]}: {x.label}
-      <button className="link" onClick={async () => { await api.unblock(x.value); setB(b.filter((y) => y.value !== x.value)); }}>×</button></span>))}</div></section>;
+      <button className="link" onClick={() => api.unblock(x.value).then(() => setB((cur) => cur.filter((y) => y.value !== x.value)))
+        .catch((e) => setErr(String(e.message || e)))}>×</button></span>))}</div></section>;
 }

@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
@@ -21,9 +21,9 @@ LETTERBOXD_USER = os.getenv("LETTERBOXD_USER", "westonpeace")
 
 
 def env(name: str, default: str = "") -> str:
-    # Re-read .env each call so a key added while the server runs is picked up.
-    load_dotenv(ROOT / ".env", override=True)
-    return os.getenv(name, default) or default
+    # Re-read .env each call so a key added while the server runs is picked up, without
+    # rewriting os.environ from request threads. Falls back to the shell environment.
+    return dotenv_values(ROOT / ".env").get(name) or os.getenv(name) or default
 
 
 for p in (CACHE, TMDB_CACHE, ARTIFACTS):

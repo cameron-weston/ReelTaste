@@ -40,7 +40,8 @@ def _run_cli(prompt: str, timeout: int = 120) -> str:
     if not exe:
         raise RuntimeError("Claude Code CLI not found. Install it and run `claude` once to log in.")
     model = env("LLM_MODEL", "sonnet")
-    p = subprocess.run([exe, "-p", prompt, "--output-format", "json", "--model", model],
+    # No tools: the prompt carries third-party text (TMDB overviews), so nothing in it may run anything.
+    p = subprocess.run([exe, "-p", prompt, "--output-format", "json", "--model", model, "--tools", ""],
                        capture_output=True, text=True, timeout=timeout, env=_clean_env(), cwd="/tmp")
     try:
         d = json.loads(p.stdout)
@@ -91,4 +92,4 @@ def parse_json(text: str):
     if m:
         text = m.group(1)
     start = min([i for i in (text.find("["), text.find("{")) if i >= 0], default=0)
-    return json.loads(text[start:])
+    return json.JSONDecoder().raw_decode(text, start)[0]  # ignores any chatter after the JSON

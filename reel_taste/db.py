@@ -62,11 +62,11 @@ def new_query(kind, mode, mood, filters, dial, llm) -> str:
     return qid
 
 
-def log_recs(qid: str, kind: str, source: str, items: list[tuple[int, float]], shown: bool):
+def log_recs(qid: str, kind: str, source: str, items: list[tuple[int, float]], shown: bool, start: int = 0):
     ts = time.time()
     with conn() as c:
         c.executemany("INSERT INTO rec_log VALUES(?,?,?,?,?,?,?,?)",
-                      [(qid, ts, kind, source, i + 1, int(t), float(p) if p == p else None, int(shown))
+                      [(qid, ts, kind, source, start + i + 1, int(t), float(p) if p == p else None, int(shown))
                        for i, (t, p) in enumerate(items)])
 
 

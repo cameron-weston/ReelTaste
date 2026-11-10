@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, Card, RecResponse, Status, stars } from "./api";
 import ShowRater from "./ShowRater";
 import LogModal, { Logged } from "./LogModal";
@@ -27,45 +27,49 @@ export default function Recommend({ kind, llmReady, status }: Props) {
   const [logged, setLogged] = useState<Record<number, Logged>>({});
 
   const ready = kind === "movie" ? status?.has_films : status?.has_shows;
+  const reqId = useRef(0); // drops a slow response that a newer request has already replaced
 
   const ask = async (more = false) => {
+    const id = ++reqId.current;
     setLoading(true); setErr("");
     try {
       const filters: any = {};
       for (const [k, v] of Object.entries(f)) if (v !== "" && v !== null && v !== undefined) filters[k] = v;
       const r = await api.recommend({
         kind, mode, mood, filters, dial, n: 10, offset: more ? items.length : 0,
-        use_llm: useLlm && llmReady && !more, query_id: more ? res?.query_id : null,
+        use_llm: useLlm && llmReady && !more, query_id: more ? res?.query_id : null, exclude: more ? items.map((c) => c.key) : [],
       });
+      if (id !== reqId.current) return;
       if (r.error) setErr(r.error);
       setRes(r);
-      setItems(more ? [...items, ...r.items] : r.items);
+      setItems((prev) => more ? [...prev, ...r.items.filter((x) => !prev.some((p) => p.key === x.key))] : r.items);
       if (!more) { setDone({}); setLogged({}); }
-    } catch (e: any) { setErr(String(e.message || e)); }
-    setLoading(false);
+    } catch (e: any) { if (id === reqId.current) setErr(String(e.message || e)); }
+    if (id === reqId.current) setLoading(false);
+  };
+  const act = async (fn: () => Promise<void>) => {
+    try { await fn(); } catch (e: any) { setErr(String(e.message || e)); }
   };
 
   useEffect(() => { if (ready) ask(); }, [kind, ready]);
 
-  const fb = async (c: Card, action: string) => {
+  const fb = (c: Card, action: string) => act(async () => {
     await api.feedback({ kind: c.kind, tmdb_id: c.tmdb_id, action, query_id: res?.query_id });
-    setDone({ ...done, [c.tmdb_id]: action });
+    setDone((d) => ({ ...d, [c.tmdb_id]: action }));
     if (action === "watchlist" && c.letterboxd_url) window.open(c.letterboxd_url, "_blank");
-  };
-  const onLogged = (l: Logged) => {
-    const c = logging!;
-    setLogged({ ...logged, [c.tmdb_id]: l });
+  });
+  const onLogged = (c: Card, l: Logged) => {
+    setLogged((m) => ({ ...m, [c.tmdb_id]: l }));
     setLogging(null);
   };
-  const unlog = async (c: Card) => {
+  const unlog = (c: Card) => act(async () => {
     await api.unlog(logged[c.tmdb_id].id);
-    const { [c.tmdb_id]: _, ...rest } = logged;
-    setLogged(rest);
-  };
-  const block = async (c: Card, value: string, label: string) => {
+    setLogged(({ [c.tmdb_id]: _, ...rest }) => rest);
+  });
+  const block = (c: Card, value: string, label: string) => act(async () => {
     await api.block(value, label);
-    setDone({ ...done, [c.tmdb_id]: `blocked ${label}` });
-  };
+    setDone((d) => ({ ...d, [c.tmdb_id]: `blocked ${label}` }));
+  });
 
   return (
     <div>
@@ -80,7 +84,7 @@ export default function Recommend({ kind, llmReady, status }: Props) {
 
       <section className="ask">
         <textarea value={mood} onChange={(e) => setMood(e.target.value)} placeholder={PLACEHOLDER[kind]}
-          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ask(); }} rows={2} />
+          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !loading && ready) ask(); }} rows={2} />
         <div className="controls">
           {kind === "movie" && (
             <div className="seg">
@@ -107,7 +111,7 @@ export default function Recommend({ kind, llmReady, status }: Props) {
             <label>Language <select value={f.languages?.[0] ?? ""} onChange={(e) => setF({ ...f, languages: e.target.value ? [e.target.value] : "" })}>
               <option value="">Any</option><option value="en">English</option><option value="fr">French</option><option value="ja">Japanese</option>
               <option value="ko">Korean</option><option value="es">Spanish</option><option value="it">Italian</option><option value="de">German</option></select></label>
-            <label>Min votes <input type="number" value={f.min_votes ?? (kind === "movie" ? 200 : 300)} onChange={(e) => setF({ ...f, min_votes: +e.target.value })} /></label>
+            <label>Min votes <input type="number" placeholder={kind === "movie" ? "200" : "300"} value={f.min_votes ?? ""} onChange={(e) => setF({ ...f, min_votes: e.target.value ? +e.target.value : "" })} /></label>
             {kind === "movie" && <label className="check"><input type="checkbox" checked={f.include_docs} onChange={(e) => setF({ ...f, include_docs: e.target.checked })} /> Documentaries</label>}
             {kind === "tv" && <label className="check"><input type="checkbox" checked={!!f.finished_only} onChange={(e) => setF({ ...f, finished_only: e.target.checked })} /> Finished shows only</label>}
             {kind === "tv" && <label>Max seasons <input type="number" value={f.max_seasons ?? ""} onChange={(e) => setF({ ...f, max_seasons: e.target.value ? +e.target.value : "" })} /></label>}
@@ -122,7 +126,7 @@ export default function Recommend({ kind, llmReady, status }: Props) {
 
       <div className="grid">
         {items.map((c, i) => (
-          <article key={c.key} className={`card ${done[c.tmdb_id] ? "dim" : ""} ${logged[c.tmdb_id] ? "isLogged" : ""}`}>
+          <article key={c.key} data-key={c.key} tabIndex={-1} className={`card ${done[c.tmdb_id] ? "dim" : ""} ${logged[c.tmdb_id] ? "isLogged" : ""}`}>
             <div className="poster">{c.poster ? <img src={c.poster} alt="" loading="lazy" /> : <div className="noimg">{c.title}</div>}
               <span className="rank">{i + 1}</span></div>
             <div className="body">
@@ -168,7 +172,7 @@ export default function Recommend({ kind, llmReady, status }: Props) {
           </article>
         ))}
       </div>
-      {logging && <LogModal card={logging} queryId={res?.query_id} onClose={() => setLogging(null)} onSaved={onLogged} />}
+      {logging && <LogModal card={logging} queryId={res?.query_id} onClose={() => setLogging(null)} onSaved={(l) => onLogged(logging, l)} />}
       {items.length > 0 && <div className="more"><button onClick={() => ask(true)} disabled={loading}>More</button>
         <span className="muted">{res?.n_candidates?.toLocaleString()} eligible {kind === "movie" ? "films" : "shows"}</span></div>}
     </div>

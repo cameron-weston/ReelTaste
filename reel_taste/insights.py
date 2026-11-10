@@ -104,11 +104,11 @@ def live_test() -> dict:
     bar = float((since["rating"] >= 4).mean()) if len(since) else None
     if len(log) == 0:
         return dict(bar=bar, sources={}, n_queries=0)
+    # A pick counts by the rating from your first watch. Rewatches, and shows rated from memory in the
+    # rating session, were seen before the pick, so they say nothing about it.
     later = {}
-    for r in uf[uf["rating"].notna() & uf["tmdb_id"].notna()].itertuples():
-        later[(r.kind or "movie", int(r.tmdb_id))] = (r.rating, str(r.rating_date))
-    for r in db.show_ratings().query("status == 'rated'").itertuples():
-        later[("tv", int(r.tmdb_id))] = (r.rating, time.strftime("%Y-%m-%d", time.localtime(r.ts)))
+    for r in uf[uf["first_rating"].notna() & uf["tmdb_id"].notna()].itertuples():
+        later[(r.kind or "movie", int(r.tmdb_id))] = (r.first_rating, str(r.first_rating_date))
     out = {}
     first = log.sort_values("ts").drop_duplicates(["source", "kind", "tmdb_id"])
     for (src, kind), g in first.groupby(["source", "kind"]):

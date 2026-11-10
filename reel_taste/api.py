@@ -17,6 +17,7 @@ from .tmdb import IMG
 
 app = FastAPI(title="reel-taste")
 _job = {"running": False, "log": [], "error": None, "started": None}
+_job_lock = threading.Lock()
 
 
 def _clean(o):
@@ -34,14 +35,15 @@ def _clean(o):
 
 
 def _run_build(full: bool):
-    if _job["running"]:
-        return False
+    # Claim the job slot before starting the thread, so two callers can't both start a build.
+    with _job_lock:
+        if _job["running"]:
+            return False
+        _job.update(running=True, log=[], error=None, started=time.strftime("%H:%M:%S"))
 
     def go():
-        _job.update(running=True, log=[], error=None, started=time.strftime("%H:%M:%S"))
         try:
             pipeline.build(full=full, log=lambda s: _job["log"].append(f"{time.strftime('%H:%M:%S')} {s}"))
-            pipeline._state_cache.clear()
         except Exception as e:  # noqa: BLE001
             _job["error"] = f"{e}\n{traceback.format_exc()[-1500:]}"
         finally:
@@ -52,8 +54,7 @@ def _run_build(full: bool):
 
 
 def _new_since_train() -> int:
-    uf = pipeline.merged_user_films()
-    have = int(uf["rating"].notna().sum())
+    have = pipeline.n_ratings()
     return have - int(db.get_meta("trained_n_ratings", have))
 
 
@@ -96,6 +97,7 @@ class Rec(BaseModel):
     offset: int = 0
     use_llm: bool = True
     query_id: str | None = None
+    exclude: list[str] = []  # keys already on screen, for "More"
 
 
 @app.post("/api/recommend")
@@ -106,13 +108,13 @@ def rec(r: Rec):
 class Feedback(BaseModel):
     kind: str
     tmdb_id: int
-    action: str  # watched | knew | not_interested | watchlist
+    action: str  # not_interested | watchlist
     query_id: str | None = None
 
 
 @app.post("/api/feedback")
 def feedback(f: Feedback):
-    if f.action not in ("knew", "watched", "not_interested", "watchlist", "undo"):
+    if f.action not in ("not_interested", "watchlist"):  # "watched" is recorded by /api/log
         raise HTTPException(400, "bad action")
     db.add_feedback(f.kind, f.tmdb_id, f.action, f.query_id)
     return {"ok": True}
@@ -142,10 +144,9 @@ def log_watch(entry: Log):
                         entry.rating, entry.liked, date, entry.rewatch, entry.review.strip())
     db.add_feedback(entry.kind, entry.tmdb_id, "watched", entry.query_id)
     n = _new_since_train()
-    if n >= RETRAIN_EVERY and not _job["running"]:
-        _run_build(full=False)
+    started = n >= RETRAIN_EVERY and _run_build(full=False)
     return {"ok": True, "id": log_id, "new_since_train": n, "retrain_every": RETRAIN_EVERY,
-            "retraining": _job["running"]}
+            "retraining": bool(started or _job["running"])}
 
 
 @app.delete("/api/log")
@@ -231,7 +232,13 @@ class ShowRating(BaseModel):
 
 @app.post("/api/shows/rate")
 def rate_show(r: ShowRating):
-    db.rate_show(r.tmdb_id, r.rating, r.status)
+    if r.status not in ("rated", "not_seen"):
+        raise HTTPException(400, "bad status")
+    if r.status == "rated" and (r.rating is None or not (0.5 <= r.rating <= 5 and (r.rating * 2) % 1 == 0)):
+        raise HTTPException(400, "rating must be 0.5-5 in half stars")
+    db.rate_show(r.tmdb_id, r.rating if r.status == "rated" else None, r.status)
+    if r.status == "rated" and _new_since_train() >= RETRAIN_EVERY:
+        _run_build(full=False)
     return {"ok": True}
 
 
@@ -241,4 +248,6 @@ if dist.exists():
 
     @app.get("/{path:path}")
     def spa(path: str):
+        if path.startswith("api/"):
+            raise HTTPException(404, "no such endpoint")
         return FileResponse(dist / "index.html")

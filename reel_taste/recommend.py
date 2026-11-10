@@ -209,7 +209,7 @@ Answer with only a JSON array of objects: [{{"id": <tmdb id>, "why": "<one or tw
 
 def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filters: dict | None = None,
               dial: float = 0.5, n: int = 10, offset: int = 0, use_llm: bool = True,
-              query_id: str | None = None) -> dict:
+              query_id: str | None = None, exclude: list[str] | None = None) -> dict:
     filters = filters or {}
     state = pipeline.load_state()
     table = state and state.get("films" if kind == "movie" else "shows")
@@ -273,7 +273,9 @@ def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filte
     # Claude's shortlist leans harder on the mood: it can judge fit, but only among what it's given.
     llm_order = [keys[i] for i in np.argsort(-(score + 2.0 * fit))] if mood else order
     rated = state["rated"] if kind == "movie" else state.get("tv_rated", state["rated"])
-    want = offset + n
+    # "More" pages past everything already on screen (Claude's picks included), not a fixed slice.
+    shown = set(exclude or [])
+    want = len(shown) + n
 
     llm_used, llm_error = False, None
     Z = ctx.cs.Z if ctx.cs is not None else None
@@ -289,15 +291,18 @@ def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filte
                 items += [c for c in cands if c["tmdb_id"] not in got][: n - len(items)]
         except ValueError:
             llm_error = "Claude's reply wasn't usable JSON"
-            items = cands[:n]
+            items = None
         except Exception as e:  # noqa: BLE001
             llm_error = str(e)[:200]
-            items = cands[:n]
+            items = None
+        if items is None:  # fall back to the model's own order
+            items = [_card(k, meta[k], T.loc[k], ctx, rated) for k in pool[:n]]
     else:
-        items = [_card(k, meta[k], T.loc[k], ctx, rated) for k in pool[offset:want]]
+        items = [_card(k, meta[k], T.loc[k], ctx, rated) for k in pool if k not in shown][:n]
 
     qid = query_id or db.new_query(kind, mode, mood, filters, dial, llm_used)
-    db.log_recs(qid, kind, "llm" if llm_used else "model", [(c["tmdb_id"], c["predicted"]) for c in items], True)
+    db.log_recs(qid, kind, "llm" if llm_used else "model", [(c["tmdb_id"], c["predicted"]) for c in items], True,
+                start=len(shown))
     if offset == 0:
         _log_baselines(qid, kind, keys, T, meta, n)
     return dict(items=items, query_id=qid, llm_used=llm_used, llm_error=llm_error,

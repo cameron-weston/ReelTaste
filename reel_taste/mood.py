@@ -44,6 +44,7 @@ LEXICON: dict[str, tuple[list[str], list[str]]] = {
     "western": (["Western"], ["western"]),
     "mystery": (["Mystery"], ["whodunit", "investigation", "detective"]),
     "noir": (["Crime"], ["film noir", "neo-noir", "detective"]),
+    "crime": (["Crime"], ["heist", "gangster", "organized crime", "police", "robbery"]),
     "heist": (["Crime"], ["heist"]),
     "family": (["Family"], ["family"]),
     "violent": (["Action", "Crime"], ["violence", "revenge", "gore"]),
@@ -71,7 +72,7 @@ def _num(s: str) -> float:
 def parse(text: str) -> dict:
     t = (text or "").lower()
     out: dict = {"filters": {}, "want": [], "avoid": []}
-    m = re.search(r"(?:under|less than|shorter than|max|at most|<)\s*([\d.]+|one|two|three|an|a)\s*(?:and a half\s*)?(hours?|hrs?|h\b|minutes?|mins?|m\b)", t)
+    m = re.search(r"(?:under|less than|shorter than|max|at most|<)\s*([\d.]+|one|two|three|an|a)\s*(?:and a half\s*)?(hours?|hrs?|h\b|minutes?|mins?|m\b)(?:\s*and a half)?", t)
     if m:
         n = _num(m.group(1)) + (0.5 if "and a half" in m.group(0) else 0)
         out["filters"]["max_runtime"] = int(n * 60 if m.group(2).startswith("h") else n)
@@ -81,15 +82,19 @@ def parse(text: str) -> dict:
     if m:
         dec = int((m.group(1) or ("20" if m.group(2) in "012" else "19")) + m.group(2) + "0")
         out["filters"]["year_min"], out["filters"]["year_max"] = dec, dec + 9
-    if re.search(r"\b(recent|new|newer|latest)\b", t):
+    # "new" as in recent, not New York / New Wave; "classic" but not "modern classic".
+    if re.search(r"\b(recent|newer|latest)\b|\bnew\b(?!\s+(?:york|zealand|orleans|jersey|mexico|wave|hollywood))", t):
         out["filters"].setdefault("year_min", 2018)
-    if re.search(r"\b(old|classic)\b", t) and "year_max" not in out["filters"]:
+    if (re.search(r"\bold\b|(?<!modern )\bclassic\b", t) and "year_max" not in out["filters"]
+            and not re.search(r"\bnot\s+(?:too\s+|an?\s+)?(?:old|classic)\b", t)):
         out["filters"]["year_max"] = 1979
     if re.search(r"\b(weekend|finish|miniseries|mini-series|limited series|one season|binge)\b", t):
         out["filters"]["max_seasons"] = 1 if re.search(r"\b(miniseries|mini-series|limited|one season)\b", t) else 2
         out["filters"]["finished_only"] = True
-    if re.search(r"\b(no subtitles|english)\b", t):
-        out["filters"]["languages"] = ["en"]
+    for clause in re.split(r"[,;.]| but ", t):  # "not in english" means the opposite
+        if (re.search(r"\b(no subtitles|english)\b", clause)
+                and not re.search(r"\b(?:not|no|non)[\s-]+(?:in\s+)?english\b", clause)):
+            out["filters"]["languages"] = ["en"]
     # Split into clauses so "funny, not bleak" negates only "bleak".
     for clause in re.split(r"[,;.]| but | and ", t):
         neg = re.search(rf"\b{NEGATORS}\b", clause) is not None

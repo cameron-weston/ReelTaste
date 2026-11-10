@@ -10,6 +10,10 @@ const TABS: [Tab, string][] = [["films", "Films"], ["shows", "Shows"], ["taste",
 export default function App() {
   const [tab, setTab] = useState<Tab>(() => (localStorage.getItem("tab") as Tab) || "films");
   const [status, setStatus] = useState<Status | null>(null);
+  // A Recommend tab mounts the first time it's opened, then stays mounted (hidden) so its results
+  // survive tab switches. Never-opened tabs don't fetch, so they log no "shown" picks.
+  const [visited, setVisited] = useState<Set<Tab>>(() => new Set([tab]));
+  useEffect(() => { setVisited((v) => (v.has(tab) ? v : new Set(v).add(tab))); }, [tab]);
   const [llm, setLlm] = useState<{ ready: boolean; detail: string; backend: string } | null>(null);
 
   const refreshStatus = () => api.status().then(setStatus).catch(() => {});
@@ -42,8 +46,8 @@ export default function App() {
       )}
       {status?.job.error && <pre className="banner bad">{status.job.error}</pre>}
       <main>
-        {tab === "films" && <Recommend kind="movie" llmReady={!!llm?.ready} status={status} />}
-        {tab === "shows" && <Recommend kind="tv" llmReady={!!llm?.ready} status={status} />}
+        {visited.has("films") && <div hidden={tab !== "films"}><Recommend kind="movie" llmReady={!!llm?.ready} status={status} /></div>}
+        {visited.has("shows") && <div hidden={tab !== "shows"}><Recommend kind="tv" llmReady={!!llm?.ready} status={status} /></div>}
         {tab === "taste" && <Taste />}
         {tab === "score" && <Scoreboard status={status} onBuild={refreshStatus} llm={llm} />}
       </main>
