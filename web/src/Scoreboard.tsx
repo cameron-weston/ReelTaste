@@ -14,9 +14,9 @@ export default function Scoreboard({ status, onBuild, llm }: { status: Status | 
   const fail = (e: any) => setErr(String(e?.message || e));
   useEffect(() => { api.scoreboard().then((x) => { setS(x); setErr(""); }).catch(fail); }, [status?.built_at]);
 
-  const build = (full: boolean) => api.build(full).then(onBuild).catch(fail);
+  const build = (full: boolean) => api.build(full).then(() => { setErr(""); onBuild(); }).catch(fail);
   const refresh = () => api.refresh().then((r) => {
-    setMsg(`${r.new_rss_entries} new RSS entries${r.retraining ? " — retraining" : ""}`); onBuild();
+    setErr(""); setMsg(`${r.new_rss_entries} new RSS entries${r.retraining ? " — retraining" : ""}`); onBuild();
   }).catch(fail);
 
   const off = s?.offline;

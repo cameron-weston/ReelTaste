@@ -82,12 +82,15 @@ def parse(text: str) -> dict:
     if m:
         dec = int((m.group(1) or ("20" if m.group(2) in "012" else "19")) + m.group(2) + "0")
         out["filters"]["year_min"], out["filters"]["year_max"] = dec, dec + 9
-    # "new" as in recent, not New York / New Wave; "classic" but not "modern classic".
-    if re.search(r"\b(recent|newer|latest)\b|\bnew\b(?!\s+(?:york|zealand|orleans|jersey|mexico|wave|hollywood))", t):
-        out["filters"].setdefault("year_min", 2018)
-    if (re.search(r"\bold\b|(?<!modern )\bclassic\b", t) and "year_max" not in out["filters"]
-            and not re.search(r"\bnot\s+(?:too\s+|an?\s+)?(?:old|classic)\b", t)):
-        out["filters"]["year_max"] = 1979
+    # Era words, per clause so "nothing old" or "no new stuff" don't set the opposite filter.
+    # "new" as in recent, not New York / New Wave / new to me; "classic" but not "modern classic".
+    for clause in re.split(r"[,;.]| but ", t):
+        if re.search(rf"\b{NEGATORS}\b", clause):
+            continue
+        if re.search(r"\b(recent|newer|latest)\b|\bnew\b(?!\s+(?:york|zealand|orleans|jersey|mexico|wave|hollywood|to me))", clause):
+            out["filters"].setdefault("year_min", 2018)
+        if re.search(r"\bold\b|(?<!modern )\bclassic\b", clause) and "year_max" not in out["filters"]:
+            out["filters"]["year_max"] = 1979
     if re.search(r"\b(weekend|finish|miniseries|mini-series|limited series|one season|binge)\b", t):
         out["filters"]["max_seasons"] = 1 if re.search(r"\b(miniseries|mini-series|limited|one season)\b", t) else 2
         out["filters"]["finished_only"] = True

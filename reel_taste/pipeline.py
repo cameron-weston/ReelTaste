@@ -55,8 +55,13 @@ def merged_user_films() -> pd.DataFrame:
             "review", "ts"]
     entries = [x[cols] for x in (rss, logs) if len(x)]
     if not entries:
-        return uf
+        return uf.assign(first_rating=uf["rating"], first_rating_date=uf["rating_date"])
     entries = pd.concat(entries, ignore_index=True)
+    # An app log with no date is an old watch of unknown date: it joins the backfill (one shared lower
+    # weight, never in the recent test window, never a live-test hit). Undated RSS entries use the
+    # day they were fetched.
+    entries["undated"] = entries["watched_date"].isna() & entries["source"].eq("app")
+    entries["watched_date"] = entries["watched_date"].where(~entries["undated"], BACKFILL_DATE)
     entries["watched_date"] = entries["watched_date"].fillna(
         pd.to_datetime(entries["ts"], unit="s").dt.strftime("%Y-%m-%d"))
     entries = entries.sort_values(["watched_date", "ts"], kind="mergesort")
@@ -79,10 +84,10 @@ def merged_user_films() -> pd.DataFrame:
             rows.append(dict(key=key, name=r.name, year=int(r.year) if str(r.year).isdigit() else None,
                              rating=r.rating, rating_date=r.watched_date, watched=True,
                              rewatches=int(r.rewatch), liked=bool(r.liked), watchlist=False, review=review,
-                             last_watched=r.watched_date, source=r.source, backfill=False, kind=kind,
+                             last_watched=r.watched_date, source=r.source, backfill=bool(r.undated), kind=kind,
                              tmdb_id=tid, ml_id=t2m.get(tid) if (tid is not None and kind == "movie") else None,
-                             first_rating=None if r.rewatch else r.rating,
-                             first_rating_date=None if (r.rewatch or pd.isna(r.rating)) else r.watched_date))
+                             first_rating=None if (r.rewatch or r.undated) else r.rating,
+                             first_rating_date=None if (r.rewatch or r.undated or pd.isna(r.rating)) else r.watched_date))
             i = len(rows) - 1
             by_key[key] = i
             if tid is not None:
@@ -94,8 +99,8 @@ def merged_user_films() -> pd.DataFrame:
             continue
         row["watched"] = True
         if pd.notna(r.rating) and (pd.isna(row["rating"]) or str(row["rating_date"]) <= str(r.watched_date)):
-            row.update(rating=r.rating, rating_date=r.watched_date, backfill=False)
-        if pd.notna(r.rating) and not r.rewatch and pd.isna(row.get("first_rating")):
+            row.update(rating=r.rating, rating_date=r.watched_date, backfill=bool(r.undated))
+        if pd.notna(r.rating) and not r.rewatch and not r.undated and pd.isna(row.get("first_rating")):
             row.update(first_rating=r.rating, first_rating_date=r.watched_date)
         if r.rewatch:
             row["rewatches"] = int(row["rewatches"] or 0) + 1

@@ -11,9 +11,15 @@ export default function ShowRater() {
 
   const left = useRef<number | null>(null);
   const pending = useRef(new Set<number>()); // rated but maybe not saved yet: never let a refill bring them back
-  const load = (query = q) => api.showQueue(query)
-    .then((d) => setData({ ...d, items: d.items.filter((x: any) => !pending.current.has(x.tmdb_id)) }))
-    .catch((e) => setErr(String(e.message || e)));
+  const submitted = useRef(""); // refills use the last search you ran, not unsubmitted typing
+  const reqId = useRef(0);
+  const load = (query = submitted.current) => {
+    submitted.current = query;
+    const id = ++reqId.current;
+    return api.showQueue(query)
+      .then((d) => { if (id === reqId.current) setData({ ...d, items: d.items.filter((x: any) => !pending.current.has(x.tmdb_id)) }); })
+      .catch((e) => setErr(String(e.message || e)));
+  };
   useEffect(() => { load(""); }, []);
   useEffect(() => { left.current = data?.items?.length ?? null; }, [data]);
 
@@ -40,7 +46,7 @@ export default function ShowRater() {
       <div className="rater-head">
         <b>Rate shows you've seen</b>
         <span className="muted">{data?.n_rated ?? 0} rated this way · the model retrains after 10 new ratings</span>
-        <input placeholder="Find a show…" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load()} />
+        <input placeholder="Find a show…" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load(q)} />
       </div>
       {err && <div className="banner bad">{err}</div>}
       <div className="rater-grid">

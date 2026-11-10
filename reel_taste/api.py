@@ -139,7 +139,14 @@ def log_watch(entry: Log):
     if entry.rating is not None and not (0.5 <= entry.rating <= 5 and (entry.rating * 2) % 1 == 0):
         raise HTTPException(400, "rating must be 0.5-5 in half stars")
     m = pipeline.context().meta.get(f"{entry.kind}:{entry.tmdb_id}") or {}
-    date = entry.watched_date or time.strftime("%Y-%m-%d")
+    date = entry.watched_date  # None = watched some time ago, date unknown
+    if date is not None:
+        try:
+            time.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, "watched_date must be YYYY-MM-DD")
+        if date > time.strftime("%Y-%m-%d"):
+            raise HTTPException(400, "watched_date is in the future")
     log_id = db.add_log(entry.kind, entry.tmdb_id, m.get("title") or m.get("name") or "", str(m.get("year") or ""),
                         entry.rating, entry.liked, date, entry.rewatch, entry.review.strip())
     db.add_feedback(entry.kind, entry.tmdb_id, "watched", entry.query_id)

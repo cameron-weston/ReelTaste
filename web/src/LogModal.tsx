@@ -36,12 +36,15 @@ export default function LogModal({ card, queryId, onClose, onSaved }: Props) {
   };
   const saveRef = useRef(save);
   saveRef.current = save;
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
+  const close = () => { if (!busy.current) onClose(); }; // a save in flight finishes before closing
+  const closeRef = useRef(close);
+  closeRef.current = close;
 
   // Register once; refs keep the handlers current. Focus returns to the opener on close.
   useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
+    // Safari doesn't focus clicked buttons, so the opener may be <body>; the card is the fallback.
+    const a = document.activeElement as HTMLElement | null;
+    const opener = a && a !== document.body ? a : null;
     box.current?.focus();
     const k = (e: KeyboardEvent) => {
       if (e.key === "Escape") closeRef.current();
@@ -77,9 +80,9 @@ export default function LogModal({ card, queryId, onClose, onSaved }: Props) {
 
   const shown = hover || rating || 0;
   return (
-    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <div className="logbox" ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Log ${card.title}`}>
-        <button className="x" onClick={onClose} aria-label="Close">×</button>
+        <button className="x" onClick={close} aria-label="Close">×</button>
         <div className="logposter">
           {card.poster ? <img src={card.poster} alt="" /> : <div className="noimg">{card.title}</div>}
         </div>
@@ -119,8 +122,10 @@ export default function LogModal({ card, queryId, onClose, onSaved }: Props) {
             <button className="primary save" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
           </div>
           <div className="muted lognote">
-            {rating ? `Predicted ${card.predicted.toFixed(1)}. Your rating trains the model and counts in the live test.`
-              : "No rating: it's logged as watched and hidden from picks, but won't train the model."}
+            {!rating ? "No rating: it's logged as watched and hidden from picks, but won't train the model."
+              : !dated ? "No date: it's treated as an old watch, so it trains the model at the lower backfill weight."
+              : rewatch ? "A rewatch: it trains the model but doesn't count as a live-test hit."
+              : `Predicted ${card.predicted.toFixed(1)}. Your rating trains the model and counts in the live test.`}
             {" "}Saved here only; Letterboxd has no way for apps to post.{" "}
             {card.letterboxd_url && <a href={card.letterboxd_url} target="_blank" rel="noreferrer">Open on Letterboxd ↗</a>}
           </div>

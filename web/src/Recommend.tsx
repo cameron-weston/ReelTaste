@@ -28,6 +28,7 @@ export default function Recommend({ kind, llmReady, status }: Props) {
 
   const ready = kind === "movie" ? status?.has_films : status?.has_shows;
   const reqId = useRef(0); // drops a slow response that a newer request has already replaced
+  const lastAsk = useRef<any>(null); // "More" continues the query on screen, not edits made since
 
   const ask = async (more = false) => {
     const id = ++reqId.current;
@@ -35,8 +36,9 @@ export default function Recommend({ kind, llmReady, status }: Props) {
     try {
       const filters: any = {};
       for (const [k, v] of Object.entries(f)) if (v !== "" && v !== null && v !== undefined) filters[k] = v;
+      if (!more || !lastAsk.current) lastAsk.current = { kind, mode, mood, filters, dial };
       const r = await api.recommend({
-        kind, mode, mood, filters, dial, n: 10, offset: more ? items.length : 0,
+        ...lastAsk.current, n: 10, offset: more ? items.length : 0,
         use_llm: useLlm && llmReady && !more, query_id: more ? res?.query_id : null, exclude: more ? items.map((c) => c.key) : [],
       });
       if (id !== reqId.current) return;
@@ -53,11 +55,14 @@ export default function Recommend({ kind, llmReady, status }: Props) {
 
   useEffect(() => { if (ready) ask(); }, [kind, ready]);
 
-  const fb = (c: Card, action: string) => act(async () => {
-    await api.feedback({ kind: c.kind, tmdb_id: c.tmdb_id, action, query_id: res?.query_id });
-    setDone((d) => ({ ...d, [c.tmdb_id]: action }));
+  const fb = (c: Card, action: string) => {
+    // Open before any await: Safari blocks pop-ups that don't come straight from the click.
     if (action === "watchlist" && c.letterboxd_url) window.open(c.letterboxd_url, "_blank");
-  });
+    return act(async () => {
+      await api.feedback({ kind: c.kind, tmdb_id: c.tmdb_id, action, query_id: res?.query_id });
+      setDone((d) => ({ ...d, [c.tmdb_id]: action }));
+    });
+  };
   const onLogged = (c: Card, l: Logged) => {
     setLogged((m) => ({ ...m, [c.tmdb_id]: l }));
     setLogging(null);
