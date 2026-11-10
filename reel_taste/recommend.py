@@ -1,6 +1,8 @@
 """Turn precomputed scores into a list: filters, obscurity dial, mood, diversity, why, logging."""
 from __future__ import annotations
 
+from collections import OrderedDict
+
 import json
 
 import numpy as np
@@ -154,6 +156,44 @@ def _diverse(order: list[str], meta: dict, Z, index, n: int) -> list[str]:
     return picked
 
 
+def _paged(order: list[str], meta: dict, Z, index, n: int, page: int) -> list[str]:
+    """Page `page` (0-based) of `order`, with the variety rules applied within each page: at most two
+    per director and no near-duplicates on the same page. A title a page turns away goes first in line
+    for the next page, so nothing is lost and any page can be reached quickly."""
+    queue, deferred, i = list(order), [], 0
+    for p in range(page + 1):
+        picked, dirs, vecs, held = [], {}, [], []
+        waiting = set(deferred)
+        for k in deferred + queue[i:]:
+            if len(picked) >= n:
+                break
+            if k not in waiting:
+                i += 1
+            m = meta[k]
+            ds = list(m.get("directors") or [])[:1]
+            r = index.get(k) if Z is not None else None
+            dup = r is not None and vecs and int((Z[vecs] @ Z[r] > 0.8).sum()) >= 2
+            if any(dirs.get(d, 0) >= 2 for d in ds) or dup:
+                held.append(k)
+                continue
+            picked.append(k)
+            if r is not None:
+                vecs.append(r)
+            for d in ds:
+                dirs[d] = dirs.get(d, 0) + 1
+        if len(picked) < n and i >= len(queue):  # nothing new left: the variety rules give way
+            for k in dict.fromkeys(deferred + held):
+                if len(picked) >= n:
+                    break
+                if k not in picked:
+                    picked.append(k)
+        got = set(picked)
+        deferred = [k for k in dict.fromkeys(deferred + held) if k not in got]  # each title queued once
+        if p == page:
+            return picked
+    return []
+
+
 def _taste_brief(rated: pd.DataFrame, n_top: int = 40) -> str:
     r = rated.copy()
     r["recency"] = pd.to_datetime(r["rating_date"], errors="coerce")
@@ -207,9 +247,18 @@ Answer with only a JSON array of objects: [{{"id": <tmdb id>, "why": "<one or tw
     return picked
 
 
+LLM_TOP = 12  # how many picks per request Claude reorders and explains
+# The ordering behind each query's later pages, frozen when page 0 is served, so feedback or a retrain
+# between page fetches can't shift titles across pages (skipping some). Small, newest kept.
+_ORDERS: "OrderedDict[str, list[str]]" = OrderedDict()
+_ORDERS_MAX = 30
+
+
 def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filters: dict | None = None,
-              dial: float = 0.5, n: int = 10, offset: int = 0, use_llm: bool = True,
-              query_id: str | None = None, exclude: list[str] | None = None) -> dict:
+              dial: float = 0.5, n: int = 10, page: int = 0, use_llm: bool = True,
+              query_id: str | None = None, first_page: list[str] | None = None) -> dict:
+    """page 0 is the first page (Claude may reorder its top). Later pages continue the model's order,
+    skipping whatever page 0 showed (`first_page`), so they never repeat it."""
     filters = filters or {}
     state = pipeline.load_state()
     table = state and state.get("films" if kind == "movie" else "shows")
@@ -242,6 +291,22 @@ def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filte
         if not _eligible(kind, m, f):
             continue
         keys.append(k)
+    # A genre named in the mood is a requirement ("sci-fi" means sci-fi), a genre ruled out is excluded.
+    # If every named genre at once leaves too few, any one of them will do; tone words stay soft.
+    req, excl = moodlib.genre_rules(parsed)
+    genre_note = None
+    if excl:
+        keys = [k for k in keys if not set(meta[k].get("genres") or []) & excl]
+    if req:
+        strict = [k for k in keys if all(set(meta[k].get("genres") or []) & g for g in req)]
+        loose = [k for k in keys if any(set(meta[k].get("genres") or []) & g for g in req)]
+        if len(strict) >= n or (strict and len(req) == 1):
+            keys = strict
+        elif loose:
+            keys = loose
+            genre_note = "Few titles match every genre you named, so these match at least one."
+        else:  # e.g. TMDB has no Horror genre for TV: fall back to the soft mood score
+            genre_note = "Nothing here is tagged with the genre you named, so the mood is matched loosely."
     if not keys:
         return dict(items=[], query_id=None, note="Nothing matches those filters.")
     T = table.loc[keys]
@@ -273,22 +338,23 @@ def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filte
     # Claude's shortlist leans harder on the mood: it can judge fit, but only among what it's given.
     llm_order = [keys[i] for i in np.argsort(-(score + 2.0 * fit))] if mood else order
     rated = state["rated"] if kind == "movie" else state.get("tv_rated", state["rated"])
-    # "More" pages past everything already on screen (Claude's picks included), not a fixed slice.
-    shown = set(exclude or [])
-    want = len(shown) + n
-
-    llm_used, llm_error = False, None
+    llm_used, llm_error, n_from_llm = False, None, 0
     Z = ctx.cs.Z if ctx.cs is not None else None
     idx = ctx.cs.index if ctx.cs is not None else {}
-    pool = _diverse(order, meta, Z, idx, want)
-    if use_llm and offset == 0:
+    # Claude picks and explains the top LLM_TOP of the first page; the model fills the rest in its order.
+    n_llm = min(n, LLM_TOP)
+    card = lambda k: _card(k, meta[k], T.loc[k], ctx, rated)  # noqa: E731
+    if use_llm and page == 0:
         cands = [_card(k, meta[k], T.loc[k], ctx, rated) for k in _diverse(llm_order, meta, Z, idx, 50)]
         try:
-            items = _llm_rerank(kind, mood, cands, rated, n)
+            items = _llm_rerank(kind, mood, cands, rated, n_llm)
             llm_used = len(items) > 0
-            if len(items) < n:
+            n_from_llm = len(items)
+            if len(items) < n_llm:
                 got = {c["tmdb_id"] for c in items}
-                items += [c for c in cands if c["tmdb_id"] not in got][: n - len(items)]
+                items += [c for c in cands if c["tmdb_id"] not in got][: n_llm - len(items)]
+            got = {c["key"] for c in items}
+            items += [card(k) for k in _paged([k for k in order if k not in got], meta, Z, idx, n - len(items), 0)]
         except ValueError:
             llm_error = "Claude's reply wasn't usable JSON"
             items = None
@@ -296,17 +362,35 @@ def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filte
             llm_error = str(e)[:200]
             items = None
         if items is None:  # fall back to the model's own order
-            items = [_card(k, meta[k], T.loc[k], ctx, rated) for k in pool[:n]]
+            items = [card(k) for k in _paged(order, meta, Z, idx, n, 0)]
+    elif page == 0:
+        items = [card(k) for k in _paged(order, meta, Z, idx, n, 0)]
     else:
-        items = [_card(k, meta[k], T.loc[k], ctx, rated) for k in pool if k not in shown][:n]
+        rest = _ORDERS.get(query_id or "")
+        if rest is None:  # server restarted since page 0: rebuild from the current order
+            first = set(first_page or [])
+            rest = [k for k in order if k not in first]
+        items = [card(k) for k in _paged(rest, meta, Z, idx, n, page - 1) if k in T.index]  # drops titles since hidden
+    start = page * n
 
     qid = query_id or db.new_query(kind, mode, mood, filters, dial, llm_used)
-    db.log_recs(qid, kind, "llm" if llm_used else "model", [(c["tmdb_id"], c["predicted"]) for c in items], True,
-                start=len(shown))
-    if offset == 0:
+    # Only the picks Claude chose count as "llm" in the live test; the fill below them is the model's.
+    n_by_llm = n_from_llm if llm_used else 0
+    if page == 0:
+        shown_keys = {c["key"] for c in items}
+        _ORDERS[qid] = [k for k in order if k not in shown_keys]
+        while len(_ORDERS) > _ORDERS_MAX:
+            _ORDERS.popitem(last=False)
+    log = [(c["tmdb_id"], c["predicted"]) for c in items]
+    if n_by_llm:
+        db.log_recs(qid, kind, "llm", log[:n_by_llm], True, start=start)
+    if log[n_by_llm:]:
+        db.log_recs(qid, kind, "model", log[n_by_llm:], True, start=start + n_by_llm)
+    if page == 0:
         _log_baselines(qid, kind, keys, T, meta, n)
     return dict(items=items, query_id=qid, llm_used=llm_used, llm_error=llm_error,
-                n_candidates=len(keys), mood_applied=bool(mood))
+                n_candidates=len(keys), n_pages=-(-len(keys) // n), page=page,
+                mood_applied=bool(mood), note_soft=genre_note)
 
 
 def _log_baselines(qid, kind, keys, T, meta, n):

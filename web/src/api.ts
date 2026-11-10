@@ -10,7 +10,7 @@ export type Card = {
 
 export type RecResponse = {
   items: Card[]; query_id: string | null; llm_used?: boolean; llm_error?: string | null;
-  n_candidates?: number; error?: string; note?: string;
+  n_candidates?: number; error?: string; note?: string; note_soft?: string | null; n_pages?: number; page?: number;
 };
 
 export type Status = {

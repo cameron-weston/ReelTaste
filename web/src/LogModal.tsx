@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, Card } from "./api";
-
-const STEPS = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+import StarPicker from "./StarPicker";
 const today = () => new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD in local time
 
 export type Logged = { id: number; rating: number | null; liked: boolean; retraining: boolean; left: number };
@@ -10,7 +9,6 @@ type Props = { card: Card; queryId: string | null | undefined; onClose: () => vo
 
 export default function LogModal({ card, queryId, onClose, onSaved }: Props) {
   const [rating, setRating] = useState<number | null>(null);
-  const [hover, setHover] = useState(0);
   const [liked, setLiked] = useState(false);
   const [dated, setDated] = useState(true);
   const [date, setDate] = useState(today());
@@ -71,14 +69,13 @@ export default function LogModal({ card, queryId, onClose, onSaved }: Props) {
     };
   }, []);
 
-  const pick = (v: number) => { setRating(rating === v ? null : v); setHover(0); };
-  const starKey = (e: React.KeyboardEvent) => {
-    if (e.key === "ArrowRight" || e.key === "ArrowUp") { e.preventDefault(); setRating((r) => Math.min(5, (r ?? 0) + 0.5)); }
-    if (e.key === "ArrowLeft" || e.key === "ArrowDown") { e.preventDefault(); setRating((r) => (r ?? 0) <= 0.5 ? null : r! - 0.5); }
-    if (e.key === "Backspace" || e.key === "Delete") setRating(null);
-  };
+  const meta = [card.directors[0], card.kind === "movie" && card.runtime ? `${card.runtime} min` : null]
+    .filter(Boolean).join(" · ");
+  const note = !rating ? "No rating: it's logged as watched and hidden from picks, but won't train the model."
+    : !dated ? "No date: it's treated as an old watch, so it trains the model at the lower backfill weight."
+    : rewatch ? "A rewatch: it trains the model but doesn't count as a live-test hit."
+    : `Predicted ${card.predicted.toFixed(1)}. Your rating trains the model and counts in the live test.`;
 
-  const shown = hover || rating || 0;
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <div className="logbox" ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Log ${card.title}`}>
@@ -87,48 +84,39 @@ export default function LogModal({ card, queryId, onClose, onSaved }: Props) {
           {card.poster ? <img src={card.poster} alt="" /> : <div className="noimg">{card.title}</div>}
         </div>
         <div className="logform">
-          <div className="logkicker">I watched…</div>
-          <h2>{card.title} <span className="muted">{card.year}</span></h2>
+          <header>
+            <div className="logkicker">I watched…</div>
+            <h2>{card.title} <span className="year">{card.year}</span></h2>
+            {meta && <div className="sub">{meta}</div>}
+          </header>
 
           <div className="logrow">
             <label className="check"><input type="checkbox" checked={dated} onChange={(e) => setDated(e.target.checked)} />
               {card.kind === "tv" ? "Finished on" : "Watched on"}</label>
             <input type="date" value={date} max={today()} disabled={!dated} aria-label="Date"
               onChange={(e) => setDate(e.target.value || today())} />
-            <label className="check"><input type="checkbox" checked={rewatch} onChange={(e) => setRewatch(e.target.checked)} />
+            <label className="check rewatch"><input type="checkbox" checked={rewatch} onChange={(e) => setRewatch(e.target.checked)} />
               I've {card.kind === "tv" ? "seen" : "watched"} this before</label>
           </div>
 
           <textarea placeholder="Add a review…" value={review} onChange={(e) => setReview(e.target.value)} rows={4} aria-label="Review" />
 
-          <div className="logrow rate">
-            <div>
-              <div className="lbl" id="rating-lbl">Rating</div>
-              <div className="starpick big" onMouseLeave={() => setHover(0)} role="slider" tabIndex={0}
-                aria-labelledby="rating-lbl" aria-valuemin={0} aria-valuemax={5} aria-valuenow={rating ?? 0}
-                aria-valuetext={rating ? `${rating} stars` : "no rating"} onKeyDown={starKey}>
-                {STEPS.map((v) => (
-                  <span key={v} className={`half ${v % 1 ? "l" : "r"} ${shown >= v ? "on" : ""}`}
-                    onMouseEnter={() => setHover(v)} onClick={() => pick(v)} />
-                ))}
-                <span className="val">{shown ? shown.toFixed(1) : ""}</span>
-              </div>
+          <div className="lograte">
+            <div className="field">
+              <span className="lbl">Rating</span>
+              <StarPicker value={rating} onChange={setRating} size={30} />
             </div>
-            <div>
-              <div className="lbl">Like</div>
+            <div className="field">
+              <span className="lbl">Like</span>
               <button className={`heart ${liked ? "on" : ""}`} onClick={() => setLiked(!liked)} aria-pressed={liked}
                 aria-label="Like">{liked ? "♥" : "♡"}</button>
             </div>
             <button className="primary save" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
           </div>
-          <div className="muted lognote">
-            {!rating ? "No rating: it's logged as watched and hidden from picks, but won't train the model."
-              : !dated ? "No date: it's treated as an old watch, so it trains the model at the lower backfill weight."
-              : rewatch ? "A rewatch: it trains the model but doesn't count as a live-test hit."
-              : `Predicted ${card.predicted.toFixed(1)}. Your rating trains the model and counts in the live test.`}
-            {" "}Saved here only; Letterboxd has no way for apps to post.{" "}
+          <p className="lognote">
+            {note} Saved here only; Letterboxd has no way for apps to post.{" "}
             {card.letterboxd_url && <a href={card.letterboxd_url} target="_blank" rel="noreferrer">Open on Letterboxd ↗</a>}
-          </div>
+          </p>
           {err && <div className="banner bad">{err}</div>}
         </div>
       </div>

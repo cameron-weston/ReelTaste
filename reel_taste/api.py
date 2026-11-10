@@ -9,7 +9,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import db, insights, llm, pipeline, recommend, tmdb
 from .config import RETRAIN_EVERY, ROOT
@@ -93,11 +93,11 @@ class Rec(BaseModel):
     mood: str = ""
     filters: dict = {}
     dial: float = 0.5
-    n: int = 10
-    offset: int = 0
+    n: int = Field(10, ge=1, le=100)
+    page: int = Field(0, ge=0)
     use_llm: bool = True
     query_id: str | None = None
-    exclude: list[str] = []  # keys already on screen, for "More"
+    first_page: list[str] = []  # keys page 0 showed, so later pages never repeat them
 
 
 @app.post("/api/recommend")

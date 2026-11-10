@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-
-const STEPS = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+import StarPicker from "./StarPicker";
 
 export default function ShowRater() {
   const [q, setQ] = useState("");
   const [data, setData] = useState<any>(null);
-  const [hover, setHover] = useState<Record<number, number>>({});
   const [err, setErr] = useState("");
 
   const left = useRef<number | null>(null);
@@ -54,13 +52,7 @@ export default function ShowRater() {
           <div className="rate-card" key={s.tmdb_id}>
             {s.poster ? <img src={s.poster} alt="" loading="lazy" /> : <div className="noimg">{s.title}</div>}
             <div className="t">{s.title} <span className="muted">{s.year}</span></div>
-            <div className="starpick" onMouseLeave={() => setHover((h) => ({ ...h, [s.tmdb_id]: 0 }))}>
-              {STEPS.map((v) => (
-                <span key={v} className={`half ${v % 1 ? "l" : "r"} ${(hover[s.tmdb_id] || 0) >= v ? "on" : ""}`}
-                  onMouseEnter={() => setHover((h) => ({ ...h, [s.tmdb_id]: v }))} onClick={() => rate(s.tmdb_id, v, "rated")} />
-              ))}
-              <span className="val">{hover[s.tmdb_id] ? hover[s.tmdb_id].toFixed(1) : ""}</span>
-            </div>
+            <StarPicker value={null} onChange={(v) => v && rate(s.tmdb_id, v, "rated")} size={20} label={`Rate ${s.title}`} showValue={false} commitOnEnter />
             <button className="link" onClick={() => rate(s.tmdb_id, null, "not_seen")}>Haven't seen</button>
           </div>
         ))}

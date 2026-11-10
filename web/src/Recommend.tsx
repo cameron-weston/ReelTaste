@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { api, Card, RecResponse, Status, stars } from "./api";
+import { api, Card, RecResponse, Status } from "./api";
+import { Stars } from "./StarPicker";
 import ShowRater from "./ShowRater";
 import LogModal, { Logged } from "./LogModal";
 
 type Props = { kind: "movie" | "tv"; llmReady: boolean; status: Status | null };
+
+const PAGE_SIZES = [12, 24, 48, 96];
+const PAGE_KEY = "perPage";
 
 const PLACEHOLDER = {
   movie: "e.g. slow and strange, under two hours, not bleak",
@@ -18,7 +22,15 @@ export default function Recommend({ kind, llmReady, status }: Props) {
   const [showFilters, setShowFilters] = useState(false);
   const [f, setF] = useState<any>({ include_docs: true });
   const [res, setRes] = useState<RecResponse | null>(null);
-  const [items, setItems] = useState<Card[]>([]);
+  // Pages fetched for the query on screen, by page index (0-based). Revisiting one doesn't refetch.
+  const [pages, setPages] = useState<Record<number, Card[]>>({});
+  const [page, setPage] = useState(0);
+  const [nPages, setNPages] = useState(0);
+  const [pageInput, setPageInput] = useState("1");
+  const [perPage, setPerPage] = useState<number>(() => {
+    try { const v = Number(localStorage.getItem(PAGE_KEY)); return PAGE_SIZES.includes(v) ? v : 24; } catch { return 24; }
+  });
+  const items = pages[page] ?? [];
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [done, setDone] = useState<Record<number, string>>({});
@@ -30,31 +42,76 @@ export default function Recommend({ kind, llmReady, status }: Props) {
   const reqId = useRef(0); // drops a slow response that a newer request has already replaced
   const lastAsk = useRef<any>(null); // "More" continues the query on screen, not edits made since
 
-  const ask = async (more = false) => {
+  // A new query fetches page 0 (Claude may reorder its top). Other pages continue the model's order,
+  // skipping what page 0 showed, so any page can be fetched directly.
+  const ask = async (target = 0, size = perPage) => {
     const id = ++reqId.current;
+    const fresh = target === 0;
     setLoading(true); setErr("");
     try {
       const filters: any = {};
       for (const [k, v] of Object.entries(f)) if (v !== "" && v !== null && v !== undefined) filters[k] = v;
-      const q = more && lastAsk.current ? lastAsk.current : { kind, mode, mood, filters, dial };
+      const q = !fresh && lastAsk.current ? lastAsk.current : { kind, mode, mood, filters, dial, n: size };
       const r = await api.recommend({
-        ...q, n: 10, offset: more ? items.length : 0,
-        use_llm: useLlm && llmReady && !more, query_id: more ? res?.query_id : null, exclude: more ? items.map((c) => c.key) : [],
+        ...q, page: target, use_llm: useLlm && llmReady && fresh,
+        query_id: fresh ? null : res?.query_id, first_page: fresh ? [] : (pages[0] ?? []).map((c) => c.key),
       });
       if (id !== reqId.current) return;
-      if (!more) lastAsk.current = q; // only once these results are the ones on screen
       if (r.error) setErr(r.error);
-      setRes(r);
-      setItems((prev) => more ? [...prev, ...r.items.filter((x) => !prev.some((p) => p.key === x.key))] : r.items);
-      if (!more) { setDone({}); setLogged({}); }
+      if (fresh) {
+        lastAsk.current = q; // only once these results are the ones on screen
+        setRes(r); setPages(r.items.length ? { 0: r.items } : {}); setPage(0); setPageInput("1");
+        setNPages(r.n_pages ?? 0); setDone({}); setLogged({});
+      } else if (r.items.length) {
+        setPages((ps) => ({ ...ps, [target]: r.items })); setPage(target); setPageInput(String(target + 1));
+      } else {
+        setNPages(target); setPageInput(String(page + 1)); // ran past the end: the last page is the one before
+      }
     } catch (e: any) { if (id === reqId.current) setErr(String(e.message || e)); }
     if (id === reqId.current) setLoading(false);
   };
+  const goTo = (p: number) => {
+    if (!Number.isFinite(p)) { setPageInput(String(page + 1)); return; }
+    const t = Math.max(0, Math.min(p, Math.max(nPages - 1, 0)));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    if (pages[t]) { setPage(t); setPageInput(String(t + 1)); }
+    else ask(t);
+  };
+  const changeSize = (n: number) => {
+    setPerPage(n);
+    try { localStorage.setItem(PAGE_KEY, String(n)); } catch {}
+    if (ready) ask(0, n);
+  };
+  const shownSize = lastAsk.current?.n ?? perPage; // size of the query on screen, not a pending change
+  const pageStart = page * shownSize;
+  const pager = items.length > 0 && (
+    <nav className="pager" aria-label="Pages">
+      <button onClick={() => goTo(page - 1)} disabled={page === 0 || loading}>← Prev</button>
+      <span className="pager-page">
+        <input type="number" min={1} max={nPages || 1} value={pageInput} aria-label="Page number" disabled={loading}
+          onChange={(e) => setPageInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") goTo(parseInt(pageInput, 10) - 1); }}
+          onBlur={() => setPageInput(String(page + 1))} /* Enter navigates; leaving the box just resets it */
+          onFocus={(e) => e.target.select()} />
+        <span className="muted">of {nPages.toLocaleString()}</span>
+      </span>
+      <button onClick={() => goTo(page + 1)} disabled={loading || page >= nPages - 1}>
+        {loading ? "Loading…" : "Next →"}</button>
+      <span className="muted pager-info">
+        {(pageStart + 1).toLocaleString()}–{(pageStart + items.length).toLocaleString()} of {res?.n_candidates?.toLocaleString()} eligible {kind === "movie" ? "films" : "shows"}
+      </span>
+      <label className="pager-size">Per page
+        <select value={perPage} onChange={(e) => changeSize(+e.target.value)} disabled={loading}>
+          {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </label>
+    </nav>
+  );
   const act = async (fn: () => Promise<void>) => {
     try { await fn(); } catch (e: any) { setErr(String(e.message || e)); }
   };
 
-  useEffect(() => { if (ready) ask(); }, [kind, ready]);
+  useEffect(() => { if (ready) ask(0); }, [kind, ready]);
 
   const fb = (c: Card, action: string) => {
     // Open before any await: Safari blocks pop-ups that don't come straight from the click.
@@ -90,7 +147,7 @@ export default function Recommend({ kind, llmReady, status }: Props) {
 
       <section className="ask">
         <textarea value={mood} onChange={(e) => setMood(e.target.value)} placeholder={PLACEHOLDER[kind]}
-          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !loading && ready) ask(); }} rows={2} />
+          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !loading && ready) ask(0); }} rows={2} />
         <div className="controls">
           {kind === "movie" && (
             <div className="seg">
@@ -107,7 +164,7 @@ export default function Recommend({ kind, llmReady, status }: Props) {
             <input type="checkbox" checked={useLlm && llmReady} disabled={!llmReady} onChange={(e) => setUseLlm(e.target.checked)} /> Claude
           </label>
           <button className="link" onClick={() => setShowFilters(!showFilters)}>Filters</button>
-          <button className="primary" onClick={() => ask()} disabled={loading || !ready}>{loading ? (useLlm && llmReady ? "Asking Claude…" : "Ranking…") : "Recommend"}</button>
+          <button className="primary" onClick={() => ask(0)} disabled={loading || !ready}>{loading ? (useLlm && llmReady ? "Asking Claude…" : "Ranking…") : "Recommend"}</button>
         </div>
         {showFilters && (
           <div className="filters">
@@ -129,58 +186,68 @@ export default function Recommend({ kind, llmReady, status }: Props) {
       {err && <div className="banner bad">{err}</div>}
       {res?.llm_error && <div className="banner">Claude step skipped ({res.llm_error}). Showing the model's own order.</div>}
       {res?.note && <div className="empty">{res.note}</div>}
+      {res?.note_soft && <div className="note">{res.note_soft}</div>}
 
+      {pager}
       <div className="grid">
-        {items.map((c, i) => (
-          <article key={c.key} data-key={c.key} tabIndex={-1} className={`card ${done[c.tmdb_id] ? "dim" : ""} ${logged[c.tmdb_id] ? "isLogged" : ""}`}>
+        {items.map((c, i) => {
+          const lg = logged[c.tmdb_id];
+          return (
+          <article key={c.key} data-key={c.key} tabIndex={-1} className={`card ${done[c.tmdb_id] ? "dim" : ""} ${lg ? "isLogged" : ""}`}>
             <div className="poster">{c.poster ? <img src={c.poster} alt="" loading="lazy" /> : <div className="noimg">{c.title}</div>}
-              <span className="rank">{i + 1}</span></div>
+              <span className="rank">{pageStart + i + 1}</span></div>
             <div className="body">
-              <h3><a href={c.letterboxd_url || c.tmdb_url} target="_blank" rel="noreferrer">{c.title}</a> <span className="muted">{c.year}</span></h3>
-              <div className="sub">
-                {[
-                  c.directors[0],
-                  c.kind === "movie" ? (c.runtime ? `${c.runtime} min` : null)
-                    : `${c.seasons ?? "?"} season${c.seasons === 1 ? "" : "s"}${c.episodes ? ` (${c.episodes} eps)` : ""}`,
-                  c.kind === "tv" ? (c.status === "Ended" || c.status === "Canceled" ? "finished" : "ongoing") : null,
-                  c.networks?.[0],
-                  c.language !== "en" ? c.language?.toUpperCase() : null,
-                ].filter(Boolean).join(" · ")}
-              </div>
+              <header className="card-head">
+                <h3><a href={c.letterboxd_url || c.tmdb_url} target="_blank" rel="noreferrer">{c.title}</a> <span className="year">{c.year}</span></h3>
+                <div className="sub">
+                  {[
+                    c.directors[0],
+                    c.kind === "movie" ? (c.runtime ? `${c.runtime} min` : null)
+                      : `${c.seasons ?? "?"} season${c.seasons === 1 ? "" : "s"}${c.episodes ? ` (${c.episodes} eps)` : ""}`,
+                    c.kind === "tv" ? (c.status === "Ended" || c.status === "Canceled" ? "finished" : "ongoing") : null,
+                    c.networks?.[0],
+                    c.language !== "en" ? c.language?.toUpperCase() : null,
+                  ].filter(Boolean).join(" · ")}
+                </div>
+              </header>
               <div className="pred">
-                <span className="stars">{stars(c.predicted)}</span>
+                <Stars value={c.predicted} size={17} />
                 <span className="num">{c.predicted.toFixed(1)}</span>
                 <span className={`conf ${c.confidence}`}>{c.confidence} confidence</span>
               </div>
               <p className="why">{c.why}{c.why_source === "llm" && <span className="tag">Claude</span>}</p>
               {c.because.length > 0 && (
-                <div className="because">{c.because.map((b) => <span key={b.name}>{b.name} {stars(b.rating)}</span>)}</div>
+                <div className="because">{c.because.map((b) => (
+                  <span key={b.name} title={b.name}><span className="bn">{b.name}</span><Stars value={b.rating} size={11} /></span>))}
+                </div>
               )}
               <div className="actions">
-                {logged[c.tmdb_id] ? <span className="logged">
-                  ✓ Logged{logged[c.tmdb_id].rating ? <> · <span className="stars">{stars(logged[c.tmdb_id].rating!)}</span></> : " as watched"}
-                  {logged[c.tmdb_id].liked && <span className="heart on small">♥</span>}
-                  <span className="muted"> · {logged[c.tmdb_id].retraining ? "retraining now"
-                    : logged[c.tmdb_id].rating ? `retrains in ${logged[c.tmdb_id].left} more` : ""}</span>
+                {lg ? <span className="logged">
+                  <span>✓ Logged</span>
+                  {lg.rating ? <Stars value={lg.rating} size={14} /> : <span>as watched</span>}
+                  {lg.liked && <span className="heart on small" aria-label="liked">♥</span>}
+                  <span className="muted">{lg.retraining ? "· retraining now" : lg.rating ? `· retrains in ${lg.left} more` : ""}</span>
                   <button className="link" onClick={() => unlog(c)}>Undo</button>
                 </span> : done[c.tmdb_id] ? <span className="muted">✓ {done[c.tmdb_id].replace("_", " ")}</span> : <>
                   <button className="watched" onClick={() => setLogging(c)}>Watched it!</button>
                   <button onClick={() => fb(c, "not_interested")}>Not interested</button>
                   {c.kind === "movie" && <button onClick={() => fb(c, "watchlist")}>+ Watchlist</button>}
                   <details className="blockmenu"><summary>Block</summary>
-                    <button onClick={() => block(c, c.key, c.title)}>This {c.kind === "movie" ? "film" : "show"}</button>
-                    {c.directors[0] && <button onClick={() => block(c, `person:${c.directors[0]}`, c.directors[0])}>{c.directors[0]}</button>}
-                    {c.genres.map((g) => <button key={g} onClick={() => block(c, `genre:${g}`, g)}>All {g}</button>)}
+                    <div className="blockpop">
+                      <button onClick={() => block(c, c.key, c.title)}>This {c.kind === "movie" ? "film" : "show"}</button>
+                      {c.directors[0] && <button onClick={() => block(c, `person:${c.directors[0]}`, c.directors[0])}>{c.directors[0]}</button>}
+                      {c.genres.map((g) => <button key={g} onClick={() => block(c, `genre:${g}`, g)}>All {g}</button>)}
+                    </div>
                   </details>
                 </>}
               </div>
             </div>
           </article>
-        ))}
+          );
+        })}
       </div>
       {logging && <LogModal card={logging} queryId={res?.query_id} onClose={() => setLogging(null)} onSaved={(l) => onLogged(logging, l)} />}
-      {items.length > 0 && <div className="more"><button onClick={() => ask(true)} disabled={loading}>More</button>
-        <span className="muted">{res?.n_candidates?.toLocaleString()} eligible {kind === "movie" ? "films" : "shows"}</span></div>}
+      {items.length > 0 && pager}
     </div>
   );
 }

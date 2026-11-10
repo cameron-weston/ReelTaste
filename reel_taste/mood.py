@@ -54,7 +54,70 @@ LEXICON: dict[str, tuple[list[str], list[str]]] = {
     "heavy": (["Drama", "War"], ["tragedy", "trauma", "grief", "war crimes", "holocaust"]),
     "gory": (["Horror"], ["gore", "splatter", "body horror"]),
     "subtitles": ([], []),
+    "science fiction": (["Science Fiction"], ["space", "future", "dystopia", "artificial intelligence"]),
+    "scifi": (["Science Fiction"], ["space", "future", "dystopia", "artificial intelligence"]),
+    "sci fi": (["Science Fiction"], ["space", "future", "dystopia", "artificial intelligence"]),
+    "fantasy": (["Fantasy"], ["magic", "fantasy world", "dragon", "sword and sorcery"]),
+    "war": (["War"], ["war", "battle", "soldier"]),
+    "moody": ([], ["atmospheric", "melancholy", "loneliness", "neo-noir", "existentialism", "isolation"]),
+    "atmospheric": ([], ["atmospheric", "eerie", "melancholy", "dreamlike"]),
+    "cerebral": ([], ["philosophy", "existentialism", "consciousness", "identity", "memory", "mind-bending",
+                      "artificial intelligence", "time paradox"]),
+    "thoughtful": ([], ["philosophy", "existentialism", "consciousness", "identity", "memory"]),
+    "makes you think": ([], ["philosophy", "existentialism", "consciousness", "identity", "morality"]),
+    "thought-provoking": ([], ["philosophy", "existentialism", "consciousness", "identity", "morality"]),
+    "gore": (["Horror"], ["gore", "splatter", "body horror"]),
+    "kids": (["Family"], ["children", "kids"]),
+    "slow burn": (["Drama", "Thriller"], ["slow burn", "slow cinema", "contemplative", "atmospheric", "meditative"]),
 }
+
+# Words that name a genre. A wanted one is a requirement, an avoided one an exclusion; tone words
+# ("dark", "slow") stay soft. Sets include TMDB's TV genre names.
+_SCIFI = {"Science Fiction", "Sci-Fi & Fantasy"}
+GENRE_WORDS: dict[str, set[str]] = {
+    "sci-fi": _SCIFI, "science fiction": _SCIFI, "scifi": _SCIFI, "sci fi": _SCIFI, "space": _SCIFI,
+    "fantasy": {"Fantasy", "Sci-Fi & Fantasy"},
+    "horror": {"Horror"},
+    "comedy": {"Comedy"},
+    "romance": {"Romance"},
+    "western": {"Western"},
+    "anime": {"Animation"}, "animated": {"Animation"},
+    "documentary": {"Documentary"}, "true crime": {"Documentary"},
+    "musical": {"Music"},
+    "war": {"War", "War & Politics"},
+    "mystery": {"Mystery"},
+    "crime": {"Crime"}, "noir": {"Crime", "Mystery", "Thriller"}, "heist": {"Crime"},
+    "thriller": {"Thriller", "Crime", "Mystery"},
+    "action": {"Action", "Action & Adventure"},
+    "adventure": {"Adventure", "Action & Adventure"},
+    "family": {"Family", "Kids"}, "kids": {"Family", "Kids"},
+}
+
+
+# Tone words that a genre contradicts: "dark and moody" rules against a comedy even when it's sci-fi.
+_LIGHT = {"Comedy", "Family", "Kids"}
+OPPOSED: dict[str, set[str]] = {
+    "dark": _LIGHT, "moody": _LIGHT, "bleak": _LIGHT, "depressing": _LIGHT, "heavy": _LIGHT,
+    "cerebral": {"Family", "Kids"}, "makes you think": {"Family", "Kids"}, "thoughtful": {"Family", "Kids"},
+    "thought-provoking": {"Family", "Kids"}, "slow burn": {"Action", "Comedy"}, "slow": {"Action"},
+    "tense": {"Family", "Kids"}, "scary": _LIGHT, "creepy": _LIGHT,
+    "funny": {"Horror", "War"}, "warm": {"Horror", "War"}, "cozy": {"Horror", "War", "Thriller"},
+    "comfort": {"Horror", "War", "Thriller"}, "feel-good": {"Horror", "War"}, "uplifting": {"Horror", "War"},
+}
+
+
+def genre_rules(parsed: dict) -> tuple[list[set[str]], set[str]]:
+    """(required: one genre set per wanted genre word, excluded: genres of avoided genre words)."""
+    req, seen = [], set()
+    for w in parsed["want"]:
+        g = GENRE_WORDS.get(w)
+        if g and frozenset(g) not in seen:
+            seen.add(frozenset(g))
+            req.append(g)
+    excl: set[str] = set()
+    for w in parsed.get("hard_avoid", parsed["avoid"]):
+        excl |= GENRE_WORDS.get(w, set())
+    return req, excl
 NEGATORS = r"(?:not|no|nothing|without|avoid|skip|less|isn'?t|aren'?t|never|but not)"
 NUMBERS = {"one": 1, "two": 2, "three": 3, "an": 1, "a": 1}
 
@@ -99,11 +162,21 @@ def parse(text: str) -> dict:
                 and not re.search(r"\b(?:not|no|non)[\s-]+(?:in\s+)?english\b", clause)):
             out["filters"]["languages"] = ["en"]
     # Split into clauses so "funny, not bleak" negates only "bleak".
+    # A negator only covers the words after it: "sci-fi without romance" wants sci-fi, avoids romance.
+    # "less" is a soft ask (down-weight), every other negator also hard-excludes a named genre.
+    out["hard_avoid"] = []
     for clause in re.split(r"[,;.]| but | and ", t):
-        neg = re.search(rf"\b{NEGATORS}\b", clause) is not None
+        m = re.search(rf"\b{NEGATORS}\b", clause)
         for word in LEXICON:
-            if re.search(rf"\b{re.escape(word)}\b", clause):
-                (out["avoid"] if neg else out["want"]).append(word)
+            w = re.search(rf"\b{re.escape(word)}\b", clause)
+            if not w:
+                continue
+            if m and w.start() > m.start():
+                out["avoid"].append(word)
+                if m.group(0) != "less":
+                    out["hard_avoid"].append(word)
+            else:
+                out["want"].append(word)
     if "true crime" in out["want"] and "crime" in out["want"]:
         out["want"].remove("crime")
     return out
@@ -123,4 +196,5 @@ def score(meta: dict, parsed: dict) -> float:
         return s
     want = [hit(w) for w in parsed["want"]]
     avoid = [hit(w) for w in parsed["avoid"]]
-    return (sum(want) / len(want) if want else 0.0) - (max(avoid) if avoid else 0.0)
+    clash = 0.6 if any(g & OPPOSED.get(w, set()) for w in parsed["want"]) else 0.0
+    return (sum(want) / len(want) if want else 0.0) - (max(avoid) if avoid else 0.0) - clash
