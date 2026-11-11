@@ -311,10 +311,12 @@ def recommend(kind: str = "movie", mode: str = "discover", mood: str = "", filte
         return dict(items=[], query_id=None, note="Nothing matches those filters.")
     T = table.loc[keys]
     pop = np.log1p(np.array([meta[k].get("vote_count") or 0 for k in keys], float))
-    popz = (pop - pop.mean()) / (pop.std() + 1e-9)
-    # Obscurity dial: 0 = no popularity penalty, 0.5 ≈ 0.2★ per SD of log-votes, 1 = 0.6★ per SD.
+    # Clipped to [-2, 1] SD: the very popular get a bounded penalty, so a strong enough prediction can
+    # still surface, and the most obscure don't get an unbounded boost.
+    popz = np.clip((pop - pop.mean()) / (pop.std() + 1e-9), -2.0, 1.0)
+    # Obscurity dial: 0 = no popularity penalty, 0.5 ≈ 0.25★ per SD of log-votes, 1 = 0.7★ per SD.
     base = (T["score"] if "score" in T else T["pred"]).to_numpy()  # uncapped, so 5★ ties keep their order
-    score = base - 0.6 * float(dial) ** 1.5 * popz * (mode != "watchlist")
+    score = base - 0.7 * float(dial) ** 1.5 * popz * (mode != "watchlist")
     # Rank by a cautious estimate: thinly-supported predictions need to clear a higher bar.
     score = score - T["confidence"].map({"low": 0.3, "medium": 0.1, "high": 0.0}).to_numpy()
     # Titles without MovieLens data lean on the TMDB average, which is fan-inflated at low vote
