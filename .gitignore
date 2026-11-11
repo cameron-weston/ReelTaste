@@ -1,8 +1,25 @@
+# Secrets: API keys live here and must never be committed
 .env
+
+# Personal and large data: your Letterboxd export, MovieLens, the TMDB cache,
+# trained models and the app database (reel_taste.sqlite)
 data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Python
 .venv/
 __pycache__/
 *.pyc
+
+# Front end build output and dependencies
 node_modules/
 web/dist/
+*.tsbuildinfo
+
+# Editors and macOS
 .DS_Store
+.idea/
+.vscode/
