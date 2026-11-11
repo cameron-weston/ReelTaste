@@ -1,5 +1,11 @@
-"""Collaborative filtering from MovieLens: biases + truncated SVD item factors,
-with the user folded in by ridge regression (the user is never in the training matrix)."""
+"""Collaborative filtering from MovieLens: biases plus two sets of item factors, with the user folded
+in by ridge regression (the user is never in the training matrix).
+
+- Qp (ALS on the observed ratings) predicts ratings: cf_pred.
+- Q (truncated SVD of the residual matrix, missing = 0) gives item vectors for "close to" neighbours.
+The SVD treats every unrated cell as a 0, which suits similarity but is weak at predicting a rating;
+ALS fits only the ratings people actually gave. Using each for what it's good at beat either alone
+on the validation folds."""
 from __future__ import annotations
 
 import numpy as np
@@ -12,12 +18,36 @@ from . import movielens
 
 K = 96
 MIN_ITEM_RATINGS = 20
+ALS_LAM, ALS_ITERS = 0.05, 8  # lambda picked on a MovieLens holdout, not on the user's ratings
 LAMBDA_I = 25.0
 LAMBDA_U = 10.0
 
 
+def _als(M: sp.csr_matrix, k: int = K, lam: float = ALS_LAM, iters: int = ALS_ITERS, seed: int = 0) -> np.ndarray:
+    """Weighted-lambda ALS on the observed residuals (users x items) -> item factors."""
+    Mi = M.T.tocsr()
+    eye = np.eye(k)
+    Q = np.random.default_rng(seed).standard_normal((M.shape[1], k)) * 0.05
+    P = np.zeros((M.shape[0], k))
+
+    def step(A, F, out):
+        ip, ix, dv = A.indptr, A.indices, A.data
+        for u in range(A.shape[0]):
+            a, b = ip[u], ip[u + 1]
+            if a == b:
+                out[u] = 0
+                continue
+            Fu = F[ix[a:b]]
+            out[u] = np.linalg.solve(Fu.T @ Fu + lam * (b - a) * eye, Fu.T @ dv[a:b])
+
+    for _ in range(iters):
+        step(M, Q, P)
+        step(Mi, P, Q)
+    return Q.astype(np.float32)
+
+
 class CF:
-    def __init__(self, mu, item_ids, item_bias, item_count, item_mean, Q):
+    def __init__(self, mu, item_ids, item_bias, item_count, item_mean, Q, Qp=None):
         self.mu = float(mu)
         self.item_ids = item_ids
         self.pos = {int(m): i for i, m in enumerate(item_ids)}
@@ -25,6 +55,7 @@ class CF:
         self.item_count = item_count
         self.item_mean = item_mean
         self.Q = Q
+        self.Qp = Q if Qp is None else Qp  # older cf.npz files have no ALS factors
         n = np.linalg.norm(Q, axis=1, keepdims=True)
         self.Qn = Q / np.maximum(n, 1e-9)
 
@@ -32,12 +63,13 @@ class CF:
     @classmethod
     def load(cls) -> "CF":
         z = np.load(ARTIFACTS / "cf.npz")
-        return cls(z["mu"], z["item_ids"], z["item_bias"], z["item_count"], z["item_mean"], z["Q"])
+        return cls(z["mu"], z["item_ids"], z["item_bias"], z["item_count"], z["item_mean"], z["Q"],
+                   z["Qp"] if "Qp" in z.files else None)
 
     def save(self):
         np.savez_compressed(ARTIFACTS / "cf.npz", mu=self.mu, item_ids=self.item_ids,
                             item_bias=self.item_bias, item_count=self.item_count,
-                            item_mean=self.item_mean, Q=self.Q)
+                            item_mean=self.item_mean, Q=self.Q, Qp=self.Qp)
 
     # ---- training ----------------------------------------------------
     @classmethod
@@ -62,25 +94,27 @@ class CF:
         M = sp.csr_matrix((res.astype(np.float32), (uu, ii)), shape=(len(users), len(item_ids)))
         _, s, vt = svds(M, k=K)
         Q = (vt.T * np.sqrt(s)).astype(np.float32)
+        log(f"running ALS k={K} (a few minutes)")
+        Qp = _als(M)
         item_mean = (np.bincount(ii, weights=y, minlength=len(item_ids)) / np.maximum(n_i, 1)).astype(np.float32)
-        cf = cls(mu, item_ids, b_i.astype(np.float32), n_i.astype(np.int32), item_mean, Q)
+        cf = cls(mu, item_ids, b_i.astype(np.float32), n_i.astype(np.int32), item_mean, Q, Qp)
         cf.save()
         return cf
 
     # ---- user fold-in --------------------------------------------------
-    def fold_in(self, movie_ids, ratings, weights=None, lam: float = 3.0):
-        """Return (b_u, p_u) fitted to the user's ratings on known items."""
+    def fold_in(self, movie_ids, ratings, weights=None, lam: float = 1.0):
+        """Return (b_u, p_u) in the ALS factor space, fitted to the user's ratings on known items."""
         idx = [self.pos.get(int(m)) for m in movie_ids]
         mask = np.array([i is not None for i in idx])
         if mask.sum() < 3:
-            return 0.0, np.zeros(self.Q.shape[1], dtype=np.float32)
+            return 0.0, np.zeros(self.Qp.shape[1], dtype=np.float32)
         ix = np.array([i for i in idx if i is not None])
         y = np.asarray(ratings, dtype=np.float64)[mask]
         w = np.ones_like(y) if weights is None else np.asarray(weights, dtype=np.float64)[mask]
         base = self.mu + self.item_bias[ix]
         b_u = float(np.sum(w * (y - base)) / (w.sum() + LAMBDA_U))
         res = y - base - b_u
-        Q = self.Q[ix].astype(np.float64)
+        Q = self.Qp[ix].astype(np.float64)
         A = (Q * w[:, None]).T @ Q + lam * np.eye(Q.shape[1])
         p = np.linalg.solve(A, (Q * w[:, None]).T @ res)
         return b_u, p.astype(np.float32)
@@ -90,7 +124,7 @@ class CF:
         for j, m in enumerate(movie_ids):
             i = self.pos.get(int(m)) if m is not None and not pd.isna(m) else None
             if i is not None:
-                out[j] = self.mu + self.item_bias[i] + b_u + float(self.Q[i] @ p_u)
+                out[j] = self.mu + self.item_bias[i] + b_u + float(self.Qp[i] @ p_u)
         return out
 
     def vec(self, movie_id):

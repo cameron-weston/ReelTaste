@@ -76,17 +76,28 @@ def load_export() -> pd.DataFrame:
     return df
 
 
-def evidence_weight(df: pd.DataFrame, today: str | None = None) -> pd.Series:
-    """Training weight per rated film: recent ratings count slightly more; the backfill
-    day shares one lower weight; rewatches are a strong boost."""
-    today = pd.Timestamp(today or pd.Timestamp.today().date())
-    d = pd.to_datetime(df["rating_date"], errors="coerce")
-    years_ago = ((today - d).dt.days / 365.25).fillna(6.0)
-    hl = 3.0  # half-life in years; picked on a time-based validation slice (3y beat 1.5y, 6y, 12y)
-    w = 0.5 ** (years_ago / hl)
-    w = w.where(~df["backfill"], 0.5 ** (6.0 / hl) * 0.85)  # backfill: one shared, older weight
-    w = w * (1 + 0.5 * np.minimum(df["rewatches"], 2))
-    return w
+BACKFILL_WEIGHT = 0.85  # the 2020-12-04 bulk import: real ratings, but logged from memory in one sitting
+
+
+def evidence_weight(df: pd.DataFrame) -> pd.Series:
+    """Training weight per rated film: 1 for a dated rating, a little less for the backfill day, and a
+    boost for rewatches. No recency decay: once weights were measured as of each validation cutoff
+    (not today's date), decay stopped helping (half-lives of 1.5y to 12y tied or lost), and it made
+    every fit depend on the calendar date. Fits rescale these to mean 1, so only ratios matter."""
+    w = pd.Series(1.0, index=df.index).where(~df["backfill"].astype(bool), BACKFILL_WEIGHT)
+    return w * (1 + 0.5 * np.minimum(df["rewatches"], 2))
+
+
+def rewatches_before(df: pd.DataFrame, date: str) -> pd.Series:
+    """Rewatches logged in the diary before `date`, per row of df (name, year) — for rebuilding a
+    training set as it looked on that date."""
+    di = _read("diary")
+    di = di[di["Rewatch"].astype(str).str.strip().ne("") & di["Rewatch"].notna()]
+    when = di["Watched Date"].where(di["Watched Date"].astype(str).str.len() > 0, di["Date"]).astype(str)
+    keys = [key(n, y) for n, y in zip(di["Name"], di["Year"])]
+    counts = pd.Series(keys)[(when < date).to_numpy()].value_counts()
+    return pd.Series([int(counts.get(key(n, int(y) if pd.notna(y) else y), 0)) for n, y in zip(df["name"], df["year"])],
+                     index=df.index)
 
 
 def fetch_rss(user: str = LETTERBOXD_USER, timeout: float = 15.0) -> pd.DataFrame:

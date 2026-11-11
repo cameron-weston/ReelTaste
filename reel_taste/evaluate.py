@@ -12,7 +12,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import roc_auc_score
 
 from .config import ARTIFACTS, HOLDOUT_FRACTION
-from .letterboxd import evidence_weight
+from .letterboxd import evidence_weight, rewatches_before
 from .model import Context, Hybrid, features
 
 SCOREBOARD = ARTIFACTS / "scoreboard.json"
@@ -72,13 +72,17 @@ def baselines(train: pd.DataFrame, test: pd.DataFrame, Ftr: pd.DataFrame, Fte: p
     out["Popularity"] = calibrated("tmdb_logn")
     out["TMDB similar"] = np.where(Fte["link_n"].fillna(0) > 0, ubar + Fte["link"].fillna(0), ubar) \
         if "link" in Fte else np.full(len(test), ubar)
-    out["Standard CF (SVD)"] = np.clip(Fte["cf_pred"].fillna(ubar).to_numpy(float), 0.5, 5)
+    out["Standard CF (MovieLens)"] = np.clip(Fte["cf_pred"].fillna(ubar).to_numpy(float), 0.5, 5)
     return out
 
 
 def evaluate(ctx: Context, uf: pd.DataFrame, log=print) -> dict:
     df = rated_films(uf)
     train, test = split(df)
+    # Training rows as they were when the test period began: only rewatches logged before it count.
+    test_from = str(test["rating_date"].min())
+    train = train.assign(rewatches=rewatches_before(train, test_from))
+    train["w"] = evidence_weight(train).to_numpy()
     log(f"train {len(train)}  test {len(test)}  (test from {test['rating_date'].min()})")
     t0 = time.time()
     hy = Hybrid(ctx).fit(train)
@@ -138,7 +142,7 @@ def watchlist_test(ctx: Context, uf: pd.DataFrame, rated: pd.DataFrame, log=prin
     ubar = float(np.average(rated["rating"], weights=rated["w"]))
     scores = {
         "Hybrid (ours)": F["pred"].to_numpy(),
-        "Standard CF (SVD)": F["cf_pred"].fillna(ubar).to_numpy(),
+        "Standard CF (MovieLens)": F["cf_pred"].fillna(ubar).to_numpy(),
         "Crowd average (TMDB)": F["tmdb_raw"].fillna(0).to_numpy(),
         "Popularity": F["tmdb_logn"].fillna(0).to_numpy(),
         "TMDB similar": F["link"].fillna(0).to_numpy() + 0.01 * F["link_n"].fillna(0).to_numpy(),

@@ -47,16 +47,18 @@ when the app can reach it. Without it, everything works except the Claude reorde
 
 ## How it works
 
-1. **Crowd taste:** MovieLens 32M (200k people, through 2023). Biases plus a 96-factor SVD; you are
-   folded in by ridge regression on your ratings, never mixed into the training data.
-2. **Content:** TMDB keywords, genres, director, writer, cinematographer, composer, top cast, language,
-   country, decade and plot text, in one space shared by films and shows.
+1. **Crowd taste:** MovieLens 32M (200k people, through 2023). Biases plus two sets of item factors:
+   ALS on the observed ratings predicts your rating; an SVD gives the vectors for "close to" films.
+   You are folded in by ridge regression on your ratings, never mixed into the training data.
+2. **Content:** TMDB genres, keywords, director, writer, cinematographer, composer, top cast,
+   language/country/decade and plot text, in one space shared by films and shows. Each field is
+   normalised on its own, so a long cast or keyword list can't drown out genre and language.
 3. **Features per title:** CF prediction, similarity-weighted average of your ratings on the nearest
    films (by crowd taste and by content), a content ridge model of your taste, TMDB recommendation
    links to films you rated, and crowd priors.
-4. **Blend:** trained only on your ratings, out-of-fold. Films MovieLens doesn't know (2024+) go
-   through a content-only blend. Recent ratings weigh more, rewatches weigh extra, and the
-   4 Dec 2020 backfill shares one lower weight.
+4. **Blend:** a ridge trained only on your ratings, out-of-fold, whose weights on the rating signals
+   can't go negative. Films MovieLens doesn't know (2024+) go through a content-only blend. Every
+   dated rating counts the same, rewatches count extra, and the 4 Dec 2020 backfill a little less.
 5. **Ranking:** predicted rating, minus a popularity penalty set by the obscurity dial, plus mood
    match. Then a variety pass (at most two per director, no near-duplicates). With Claude on, it
    reorders the top 50 for your mood and writes the "why".
@@ -64,37 +66,53 @@ when the app can reach it. Without it, everything works except the Claude reorde
    fitted on the same data. Live, every pick shown and every baseline's would-be pick are logged and
    matched to what you later rate.
 
-## Offline results (build of 2026-11-09)
+## Offline results (build of 2026-11-11)
 
-Trained on the 667 earliest ratings and tested on the 167 most recent (from 2024-09-17).
+Trained on the 670 earliest ratings and tested on the 168 most recent (from 2024-09-17). RMSE is the
+rating error in stars (lower is better); rank corr. is how well the order matches yours.
 
-| Row | Hybrid | TMDB crowd average | Standard CF |
+| Row | Hybrid | TMDB crowd average | Standard CF (MovieLens) |
 |---|---|---|---|
-| Films with crowd data (70) | RMSE 0.677, rank corr. 0.69, top-quarter 4★+ 94% | 0.691, 0.70, 88% | 0.693, 0.64, 88% |
-| New releases (97) | RMSE 0.685, rank corr. 0.60, top-quarter 71% | 0.716, 0.54, 75% | — |
-| All (167) | RMSE 0.682, MAE 0.534 | 0.706, 0.562 | 0.775, 0.622 |
+| Films with crowd data (71) | RMSE 0.669, rank corr. 0.70, top-quarter 4★+ 100% | 0.699, 0.71, 88% | 0.672, 0.68, 94% |
+| New releases (97) | RMSE 0.688, rank corr. 0.56, top-quarter 71% | 0.716, 0.54, 75% | — |
+| All (168) | RMSE 0.680, MAE 0.540 | 0.709, 0.565 | 0.768, 0.611 |
 
-It beats standard CF, popularity, TMDB "similar" and your average on every row. Against the plain
-TMDB average it wins on error on every row (better in 67% / 98% / 93% of bootstrap resamples) and on
-rank correlation for new releases. It trails slightly on rank correlation and AUC for films with
-crowd data, and on top-quarter hits for new releases. The live hit rate is the real test.
+It beats the TMDB average on error on every row (better in 98% of bootstrap resamples for new
+releases and 96% overall) and ties it on ranking. It beats popularity, TMDB "similar" and your
+average everywhere. Standard CF now uses the same ALS factors, so it's a much tougher baseline than
+before; the hybrid edges it on films with crowd data (a statistical tie) and is far ahead overall.
+On the watchlist check, 28 of your watchlist films land in its top 500 (crowd average 23, CF 15).
+The live hit rate is the real test.
 
-### Choices and how they were made
+### How changes are chosen
 
-Settings were picked on a time-based slice inside the training years (fit on ratings up to
-2023-09, validate on 2023-09 → 2024-09), never on the test set:
+`reel_taste/valbench.py` scores every change on two time folds inside the training years
+(2022-09 → 2023-09 and 2023-09 → 2024-09; 252 ratings). Each fold is rebuilt as it looked on its start
+date: only rewatches logged before it count, and a film only has MovieLens data if it had enough
+MovieLens ratings by then. A change ships only if it lowers error without hurting ranking, holds on
+both folds, and wins in at least ~80% of paired bootstrap resamples.
 
-- Taste signals use your centred rating, not your departure from the crowd (0.623 vs 0.635).
-- Recency half-life of 3 years (vs 1.5, 6 and 12).
-- One cross-validated blend (ridge won), not an average of ridge and gradient boosting.
-- Plain TMDB averages for films (shrinkage tied on validation, so the simpler option). Shows are
-  shrunk toward the mean and shifted onto the film scale (TMDB rates TV ~1.2 points higher).
+Bench results (RMSE / rank corr. / AUC, all 252 ratings; TMDB crowd average 0.652 / 0.591 / 0.794):
 
-Disclosure: the test set was looked at three times during development (after fixing a MovieLens ID
-mapping bug, when checking the shrinkage, and after a code review fixed train/serve skew and
-double-counted rewatches). None changed a setting the validation slice didn't already support, and
-the review fixes were kept for correctness whatever they did to the score, but the numbers above are
-not from a perfectly untouched holdout.
+| Model | RMSE | Rank corr. | AUC |
+|---|---|---|---|
+| Before (with the bench fixed) | 0.662 | 0.559 | 0.782 |
+| + weights without decay, rescaled to mean 1, blend alpha 100 | 0.633 | 0.602 | 0.812 |
+| + rating signals can't get negative weights | 0.631 | 0.609 | 0.819 |
+| + each content field normalised on its own | 0.627 | 0.617 | 0.824 |
+| + ALS factors for the CF prediction (current) | **0.622** | **0.624** | **0.832** |
+
+Tested and not adopted (tied or lost on the bench): recency decay at any half-life, isotonic or
+polynomial crowd calibration, genre/decade crowd priors, a director/cast prior, taste-twin users,
+EASE item model, feature-weighted stacking, gradient boosting variants, interaction features,
+watched/watchlist "interest" features, a content-to-CF factor map, dropping the content-neighbour
+signal, and classifier ranking. The old bench (and the old offline numbers) were flattered: training
+weights decayed from today's date, which silently set how strongly the blend was regularised, and
+films got MovieLens data in folds dated before it existed.
+
+Disclosure: the offline test set has now been looked at four times during development (after a
+MovieLens ID fix, a shrinkage check, a code review, and this round). Settings were chosen on the
+bench, and nothing was changed after seeing the test, but it is not a perfectly untouched holdout.
 
 Caveat: TMDB vote averages and counts are today's snapshot. For new releases that consensus didn't
 exist yet when you rated them, which flatters the crowd-based baselines (and the hybrid's crowd input).

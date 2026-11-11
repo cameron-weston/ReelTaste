@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import lsq_linear
+from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold
-from sklearn.pipeline import make_pipeline
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 # Chosen on a time-based validation slice inside the training years (see README):
@@ -176,9 +178,42 @@ def features(train: pd.DataFrame, targets: pd.DataFrame, ctx: Context) -> pd.Dat
     return F.astype(float)
 
 
+# Features that are themselves rating predictions: a higher value can only mean a higher rating.
+SIGNED = ("cf_pred", "cf_knn", "ml_mean", "crowd", "ct_knn", "ct_ridge", "link", "tmdb_avg")
+
+
+class SignedRidge(BaseEstimator, RegressorMixin):
+    """Weighted ridge (unpenalised intercept) whose coefficients on the SIGNED columns can't go
+    negative. With ~800 ratings and correlated signals, a plain ridge gives some of them negative
+    weights that only fit noise; the constraint beat it on both validation folds."""
+
+    def __init__(self, alpha: float = 100.0, signed=SIGNED):
+        self.alpha, self.signed = alpha, signed
+
+    def fit(self, X, y, sample_weight=None):
+        names = list(X.columns) if hasattr(X, "columns") else []
+        X, y = np.asarray(X, float), np.asarray(y, float)
+        w = np.ones(len(y)) if sample_weight is None else np.asarray(sample_weight, float)
+        xm, ym = np.average(X, axis=0, weights=w), np.average(y, weights=w)
+        sw = np.sqrt(w)[:, None]
+        p = X.shape[1]
+        A = np.vstack([(X - xm) * sw, np.sqrt(self.alpha) * np.eye(p)])
+        b = np.concatenate([(y - ym) * sw[:, 0], np.zeros(p)])
+        lb = np.array([0.0 if n in self.signed else -np.inf for n in names] or [-np.inf] * p)
+        self.coef_ = lsq_linear(A, b, bounds=(lb, np.inf)).x
+        self.intercept_ = ym - xm @ self.coef_
+        return self
+
+    def predict(self, X):
+        return np.asarray(X, float) @ self.coef_ + self.intercept_
+
+
 def _learners():
+    # Weights are rescaled to mean 1 before fitting, so alpha means the same thing on every fit.
+    # alpha=100 was best on the validation folds (30 and 300 both lost).
     return {
-        "ridge": lambda: make_pipeline(StandardScaler(), Ridge(alpha=10.0)),
+        "ridge": lambda: Pipeline([("scale", StandardScaler()),
+                                   ("ridge", SignedRidge(alpha=100.0))]).set_output(transform="pandas"),
         "gbm": lambda: HistGradientBoostingRegressor(max_depth=3, learning_rate=0.04, max_iter=250,
                                                      min_samples_leaf=25, l2_regularization=1.0,
                                                      random_state=0),
@@ -217,6 +252,8 @@ class Hybrid:
         return pd.concat(F).loc[train.index]
 
     def fit(self, train: pd.DataFrame):
+        # Mean-1 weights: regularisation strength no longer depends on how many or how old ratings are.
+        train = train.assign(w=train["w"] / train["w"].mean())
         self.train = train.copy()
         F = self.oof_features(train)
         y = train["rating"].to_numpy(float) - F["ubar"].to_numpy()
@@ -281,6 +318,7 @@ class Hybrid:
         out = np.where(np.isnan(out), F["ubar"].to_numpy(), out)
         F = F.copy()
         F["pred"] = np.clip(out, 0.5, 5.0)
+        F["score"] = out  # uncapped, for ranking: several titles can predict above 5 and still differ
         F["route"] = np.where(has_cf, "full", "content")
         support = (has_cf * 0.4 + (F["cf_max"].fillna(0) > 0.35) * 0.25 +
                    (F["ct_max"].fillna(0) > 0.45) * 0.25 + (F["link_n"].fillna(0) > 0) * 0.2)
