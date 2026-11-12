@@ -160,9 +160,24 @@ export default function Recommend({ kind, llmReady, status }: Props) {
             <input type="range" min={0} max={1} step={0.05} value={dial} onChange={(e) => setDial(+e.target.value)} disabled={mode === "watchlist"} />
             <span>Deep cuts</span>
           </label>
-          <label className="check" title={llmReady ? "Claude reorders the shortlist for your mood and writes the why" : "Claude CLI not signed in — see Scoreboard"}>
-            <input type="checkbox" checked={useLlm && llmReady} disabled={!llmReady} onChange={(e) => setUseLlm(e.target.checked)} /> Claude
-          </label>
+          <span className={"tipwrap" + (llmReady ? "" : " off")}>
+            <label className="check">
+              <input type="checkbox" checked={useLlm && llmReady} disabled={!llmReady} aria-describedby={`${kind}-llm-tip`}
+                onChange={(e) => setUseLlm(e.target.checked)} /> Claude
+            </label>
+            <button type="button" className="info" aria-label="What does the Claude option do?" aria-describedby={`${kind}-llm-tip`}>i</button>
+            <span className="tip" role="tooltip" id={`${kind}-llm-tip`}>
+              {llmReady ? <>
+                <b>Claude: on or off</b>
+                When ticked, Claude reorders the top 12 picks to fit your mood and writes a line on why each one
+                suits you. It takes a few seconds longer. Unticked, you get the model's own order.
+              </> : <>
+                <b>Claude is unavailable</b>
+                The Claude CLI on this Mac isn't signed in. Run <code>claude</code> in a terminal, type{" "}
+                <code>/login</code>, then reload this page. Everything else works without it.
+              </>}
+            </span>
+          </span>
           <button className="link" onClick={() => setShowFilters(!showFilters)}>Filters</button>
           <button className="primary" onClick={() => ask(0)} disabled={loading || !ready}>{loading ? (useLlm && llmReady ? "Asking Claude…" : "Ranking…") : "Recommend"}</button>
         </div>
