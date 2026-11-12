@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, Status } from "./api";
 import Recommend from "./Recommend";
 import Taste from "./Taste";
@@ -17,12 +17,27 @@ export default function App() {
   const [llm, setLlm] = useState<{ ready: boolean; detail: string; backend: string } | null>(null);
 
   const refreshStatus = () => api.status().then(setStatus).catch(() => {});
+  const llmBusy = useRef(false);
+  const checkLlm = (force: boolean) => {
+    if (llmBusy.current) return;
+    llmBusy.current = true;
+    api.llm(force).then(setLlm).catch(() => setLlm({ ready: false, detail: "unreachable", backend: "?" }))
+      .finally(() => { llmBusy.current = false; });
+  };
   useEffect(() => {
     refreshStatus();
-    api.llm().then(setLlm).catch(() => setLlm({ ready: false, detail: "unreachable", backend: "?" }));
+    checkLlm(false);
     const t = setInterval(refreshStatus, 4000);
     return () => clearInterval(t);
   }, []);
+  // While Claude is unavailable, check again whenever the page regains focus (e.g. after signing in
+  // to the CLI in a terminal), so it turns on without a reload.
+  useEffect(() => {
+    if (llm?.ready) return;
+    const onFocus = () => checkLlm(true);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [llm?.ready]);
   useEffect(() => { try { localStorage.setItem("tab", tab); } catch {} }, [tab]);
 
   return (

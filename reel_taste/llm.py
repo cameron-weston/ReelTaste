@@ -69,9 +69,11 @@ def complete(prompt: str, timeout: int = 120) -> str:
 
 
 def status(force: bool = False) -> dict:
-    """Cheap readiness check, cached for 10 minutes."""
+    """Readiness check. A success is cached for 10 minutes; a failure for 20 seconds, so signing in
+    to the CLI shows up almost at once."""
     now = time.time()
-    if not force and _status_cache.get("ts", 0) > now - 600:
+    ttl = 600 if _status_cache.get("v", {}).get("ready") else 20
+    if not force and _status_cache.get("ts", 0) > now - ttl:
         return _status_cache["v"]
     backend = env("LLM_BACKEND", "cli")
     try:

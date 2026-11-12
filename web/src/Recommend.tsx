@@ -174,7 +174,7 @@ export default function Recommend({ kind, llmReady, status }: Props) {
               </> : <>
                 <b>Claude is unavailable</b>
                 The Claude CLI on this Mac isn't signed in. Run <code>claude</code> in a terminal, type{" "}
-                <code>/login</code>, then reload this page. Everything else works without it.
+                <code>/login</code>, then come back to this page and it will switch on. Everything else works without it.
               </>}
             </span>
           </span>
